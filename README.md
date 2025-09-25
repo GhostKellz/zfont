@@ -8,6 +8,14 @@
   [![Fira Code](https://img.shields.io/badge/Fira_Code-Supported-4B32C3?style=flat&logo=firacode)](https://github.com/tonsky/FiraCode)
   [![Unicode](https://img.shields.io/badge/Unicode-Full_Support-5B2C87?style=flat&logo=unicode)](https://unicode.org)
 
+## DISCLAIMER
+
+⚠️ **EXPERIMENTAL LIBRARY - FOR LAB/PERSONAL USE** ⚠️
+
+This is an experimental library under active development. It is
+intended for research, learning, and personal projects. The API is subject
+to change!
+
   **Modern Font Rendering Library for Zig**
 
   *Replacing FreeType, FontConfig, and Pango with pure Zig implementations*
