@@ -19,6 +19,13 @@ pub const PowerLevel10k = @import("powerlevel10k.zig").PowerLevel10k;
 pub const MemoryMappedFont = @import("memory_mapped_font.zig").MemoryMappedFont;
 pub const ThreadedFontLoader = @import("threading.zig").FontLoader;
 pub const TerminalOptimizer = @import("terminal_optimization.zig").TerminalOptimizer;
+pub const AdvancedTextShaper = @import("text_shaper_advanced.zig").AdvancedTextShaper;
+pub const ComplexScriptProcessor = @import("complex_scripts.zig").ComplexScriptProcessor;
+pub const BiDiProcessor = @import("bidi.zig").BiDiProcessor;
+pub const VividColorRenderer = @import("vivid_colors.zig").VividColorRenderer;
+pub const OpenTypeFeatureEngine = @import("opentype_features.zig").OpenTypeFeatureEngine;
+pub const DynamicConfig = @import("dynamic_config.zig").DynamicConfig;
+pub const FontFallbackChain = @import("font_fallback.zig").FontFallbackChain;
 
 pub const FontError = error{
     InvalidFontData,
