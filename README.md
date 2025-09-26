@@ -18,18 +18,36 @@ to change!
 
   **Modern Font Rendering Library for Zig**
 
-  *Replacing FreeType, FontConfig, and Pango with pure Zig implementations*
+  *Pure Zig implementation with advanced Unicode processing via gcode integration*
 </div>
 
 ## 🚀 Features
 
+### 🌍 World-Class Unicode Support (via gcode)
+- **BiDi Text Processing**: Perfect Arabic/Hebrew RTL support (UAX #9)
+- **Complex Script Shaping**: Indic syllable formation (Devanagari, Bengali, Tamil)
+- **Arabic Contextual Forms**: Complete isolated/initial/medial/final processing
+- **CJK Width Handling**: Proper fullwidth/halfwidth character support
+- **Advanced Word Boundaries**: UAX #29 compliant word/sentence detection
+- **Perfect Emoji Sequences**: ZWJ, flags, skin tones, complex combinations
+
+### ⚡ Terminal Optimization
+- **Intelligent Cursor Positioning**: Complex text-aware cursor movement
+- **Performance-Optimized Scrolling**: Smart caching for high-speed terminals
+- **Script-Aware Rendering**: Automatic optimization based on text complexity
+- **Mixed-Script Handling**: Seamless LTR/RTL text in the same line
+
+### 🎨 Font Rendering
 - **Font Loading & Rendering**: Complete TrueType/OpenType support
 - **Text Layout Engine**: Advanced text shaping and layout capabilities
-- **Emoji Support**: Full emoji rendering with intelligent fallback handling
 - **Programming Fonts**: Native support for ligatures and coding-specific fonts
 - **Nerd Fonts Integration**: Built-in support for icon fonts and developer symbols
 - **Subpixel Rendering**: High-quality font rendering with hinting support
-- **Unicode Compliant**: Full Unicode support for international text
+
+### 🚀 Pure Zig Implementation
+- **Zero C Dependencies**: No more HarfBuzz, ICU, or FreeType
+- **Memory Safe**: Zig's safety guarantees throughout
+- **Performance**: O(1) text processing with intelligent caching
 
 ## 🎯 Project Goals
 

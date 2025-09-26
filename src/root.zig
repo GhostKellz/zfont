@@ -26,6 +26,17 @@ pub const VividColorRenderer = @import("vivid_colors.zig").VividColorRenderer;
 pub const OpenTypeFeatureEngine = @import("opentype_features.zig").OpenTypeFeatureEngine;
 pub const DynamicConfig = @import("dynamic_config.zig").DynamicConfig;
 pub const FontFallbackChain = @import("font_fallback.zig").FontFallbackChain;
+pub const GcodeTextProcessor = @import("gcode_integration.zig").GcodeTextProcessor;
+pub const GcodeFontManager = @import("gcode_integration.zig").GcodeFontManager;
+pub const GcodeTextShaper = @import("gcode_shaper.zig").GcodeTextShaper;
+pub const TerminalTextHandler = @import("terminal_text_handler.zig").TerminalTextHandler;
+pub const AdvancedScriptProcessor = @import("advanced_script_processor.zig").AdvancedScriptProcessor;
+pub const ArabicContextualProcessor = @import("arabic_contextual.zig").ArabicContextualProcessor;
+pub const IndicSyllableProcessor = @import("indic_syllable.zig").IndicSyllableProcessor;
+pub const CJKWidthProcessor = @import("cjk_width.zig").CJKWidthProcessor;
+pub const EmojiSequenceProcessor = @import("emoji_sequences.zig").EmojiSequenceProcessor;
+pub const TerminalCursorProcessor = @import("terminal_cursor.zig").TerminalCursorProcessor;
+pub const TerminalPerformanceOptimizer = @import("terminal_performance.zig").TerminalPerformanceOptimizer;
 
 pub const FontError = error{
     InvalidFontData,
