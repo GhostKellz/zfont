@@ -52,6 +52,11 @@ pub const FontParser = struct {
     }
 
     pub fn deinit(self: *Self) void {
+        // Free all the duplicated tag strings
+        var iterator = self.tables.iterator();
+        while (iterator.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+        }
         self.tables.deinit();
     }
 

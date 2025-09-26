@@ -13,6 +13,12 @@ pub const FontParser = @import("font_parser.zig").FontParser;
 pub const Hinting = @import("hinting.zig");
 pub const SubpixelRenderer = @import("subpixel_renderer.zig").SubpixelRenderer;
 pub const ProgrammingFonts = @import("programming_fonts.zig");
+pub const GPUCache = @import("gpu_cache.zig").GPUCache;
+pub const Unicode = @import("unicode.zig").Unicode;
+pub const PowerLevel10k = @import("powerlevel10k.zig").PowerLevel10k;
+pub const MemoryMappedFont = @import("memory_mapped_font.zig").MemoryMappedFont;
+pub const ThreadedFontLoader = @import("threading.zig").FontLoader;
+pub const TerminalOptimizer = @import("terminal_optimization.zig").TerminalOptimizer;
 
 pub const FontError = error{
     InvalidFontData,

@@ -3,3 +3,7 @@
 *.o
 *.exe
 CLAUDE.md
+TODO_MVP.md 
+.zig-cache/
+archive/ 
+CODEX.md

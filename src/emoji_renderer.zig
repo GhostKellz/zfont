@@ -3,13 +3,15 @@ const root = @import("root.zig");
 const Font = @import("font.zig").Font;
 const FontManager = @import("font_manager.zig").FontManager;
 const Glyph = @import("glyph.zig").Glyph;
+const Unicode = @import("unicode.zig").Unicode;
 
 pub const EmojiRenderer = struct {
     allocator: std.mem.Allocator,
     emoji_fonts: std.ArrayList(*Font),
     color_cache: std.AutoHashMap(u32, ColorGlyph),
     fallback_chain: std.ArrayList(*Font),
-    unicode_data: UnicodeEmojiData,
+    sequence_cache: std.AutoHashMap(u64, ColorGlyph), // For emoji sequences
+    grapheme_state: Unicode.GraphemeBreakState,
 
     const Self = @This();
 
@@ -65,7 +67,8 @@ pub const EmojiRenderer = struct {
             .emoji_fonts = std.ArrayList(*Font){},
             .color_cache = std.AutoHashMap(u32, ColorGlyph).init(allocator),
             .fallback_chain = std.ArrayList(*Font){},
-            .unicode_data = UnicodeEmojiData.init(allocator),
+            .sequence_cache = std.AutoHashMap(u64, ColorGlyph).init(allocator),
+            .grapheme_state = Unicode.GraphemeBreakState{},
         };
     }
 
@@ -78,8 +81,13 @@ pub const EmojiRenderer = struct {
         }
         self.color_cache.deinit();
 
+        var seq_iterator = self.sequence_cache.iterator();
+        while (seq_iterator.next()) |entry| {
+            entry.value_ptr.deinit(self.allocator);
+        }
+        self.sequence_cache.deinit();
+
         self.fallback_chain.deinit(self.allocator);
-        self.unicode_data.deinit();
     }
 
     pub fn loadEmojiFonts(self: *Self, font_manager: *FontManager) !void {
@@ -266,7 +274,7 @@ pub const EmojiRenderer = struct {
         }
     }
 
-    fn renderEmojiSequence(self: *Self, codepoint: u32, size: f32, options: EmojiRenderOptions) !ColorGlyph {
+    fn renderEmojiSequenceOld(self: *Self, codepoint: u32, size: f32, options: EmojiRenderOptions) !ColorGlyph {
         // Handle emoji sequences like skin tone modifiers, ZWJ sequences, etc.
         _ = codepoint;
 
@@ -317,7 +325,182 @@ pub const EmojiRenderer = struct {
     }
 
     pub fn isEmoji(self: *Self, codepoint: u32) bool {
-        return self.unicode_data.isEmoji(codepoint);
+        _ = self;
+
+        // Use gcode's emoji detection through Unicode module
+        const emoji_prop = Unicode.getEmojiProperty(codepoint);
+        if (emoji_prop != .None) {
+            return true;
+        }
+
+        // Additional fallback check for common emoji ranges
+        return switch (codepoint) {
+            0x1F600...0x1F64F, // Emoticons
+            0x1F300...0x1F5FF, // Miscellaneous Symbols and Pictographs
+            0x1F680...0x1F6FF, // Transport and Map Symbols
+            0x1F700...0x1F77F, // Alchemical Symbols
+            0x1F900...0x1F9FF, // Supplemental Symbols and Pictographs
+            0x1FA00...0x1FA6F, // Chess Symbols
+            0x1FA70...0x1FAFF, // Symbols and Pictographs Extended-A
+            0x2600...0x26FF,   // Miscellaneous Symbols
+            0x2700...0x27BF,   // Dingbats
+            => true,
+            else => false,
+        };
+    }
+
+    pub fn renderEmojiSequence(self: *Self, sequence: []const u32, size: f32, options: EmojiRenderOptions) !?ColorGlyph {
+        // Handle complex emoji sequences like ZWJ sequences, skin tones, flags
+
+        if (sequence.len == 0) return null;
+        if (sequence.len == 1) return self.renderEmoji(sequence[0], size, options);
+
+        // Create a hash for the sequence
+        var hasher = std.hash.Wyhash.init(0);
+        for (sequence) |cp| {
+            hasher.update(std.mem.asBytes(&cp));
+        }
+        const sequence_hash = hasher.final();
+
+        // Check cache first
+        if (self.sequence_cache.get(sequence_hash)) |cached| {
+            return self.scaleColorGlyph(cached, size);
+        }
+
+        // Handle different types of emoji sequences
+        if (self.isZWJSequence(sequence)) {
+            return self.renderZWJSequence(sequence, size, options);
+        }
+
+        if (self.isFlagSequence(sequence)) {
+            return self.renderFlagSequence(sequence, size, options);
+        }
+
+        if (self.isSkinToneSequence(sequence)) {
+            return self.renderSkinToneSequence(sequence, size, options);
+        }
+
+        // Fallback: render first emoji in sequence
+        return self.renderEmoji(sequence[0], size, options);
+    }
+
+    fn isZWJSequence(self: *Self, sequence: []const u32) bool {
+        _ = self;
+        // Check if sequence contains Zero Width Joiner (U+200D)
+        for (sequence) |cp| {
+            if (cp == 0x200D) return true;
+        }
+        return false;
+    }
+
+    fn isFlagSequence(self: *Self, sequence: []const u32) bool {
+        _ = self;
+        // Regional Indicator sequences (country flags)
+        if (sequence.len == 2) {
+            return sequence[0] >= 0x1F1E6 and sequence[0] <= 0x1F1FF and
+                   sequence[1] >= 0x1F1E6 and sequence[1] <= 0x1F1FF;
+        }
+        return false;
+    }
+
+    fn isSkinToneSequence(self: *Self, sequence: []const u32) bool {
+        _ = self;
+        // Check for emoji modifier base + skin tone modifier
+        if (sequence.len >= 2) {
+            const base_props = Unicode.getEmojiProperty(sequence[0]);
+            const modifier_props = Unicode.getEmojiProperty(sequence[1]);
+            return base_props == .Emoji_Modifier_Base and modifier_props == .Emoji_Modifier;
+        }
+        return false;
+    }
+
+    fn renderZWJSequence(self: *Self, sequence: []const u32, size: f32, options: EmojiRenderOptions) !ColorGlyph {
+        // ZWJ sequences like 👨‍👩‍👧‍👦 (family), 🏳️‍🌈 (rainbow flag)
+
+        // For now, try to render as a single glyph if available
+        // Fall back to combining individual parts
+
+        for (self.emoji_fonts.items) |font| {
+            // Try to find a precomposed glyph for the entire sequence
+            if (try self.renderSequenceWithFont(font, sequence, size, options)) |glyph| {
+                return glyph;
+            }
+        }
+
+        // Fallback: render the base emoji (first non-ZWJ, non-variation selector)
+        for (sequence) |cp| {
+            if (cp != 0x200D and cp != 0xFE0E and cp != 0xFE0F) {
+                const props = Unicode.getEmojiProperty(cp);
+                if (props != .None) {
+                    return self.renderEmoji(cp, size, options) orelse continue;
+                }
+            }
+        }
+
+        // Ultimate fallback
+        return self.renderMonochromeEmoji(sequence[0], size);
+    }
+
+    fn renderFlagSequence(self: *Self, sequence: []const u32, size: f32, options: EmojiRenderOptions) !ColorGlyph {
+        // Regional Indicator pairs for country flags
+        if (sequence.len != 2) {
+            return self.renderMonochromeEmoji(sequence[0], size);
+        }
+
+        // Convert to flag emoji codepoint if font supports it
+        for (self.emoji_fonts.items) |font| {
+            if (try self.renderSequenceWithFont(font, sequence, size, options)) |glyph| {
+                return glyph;
+            }
+        }
+
+        // Fallback: render as separate regional indicators
+        return self.renderEmoji(sequence[0], size, options) orelse
+               self.renderMonochromeEmoji(sequence[0], size);
+    }
+
+    fn renderSkinToneSequence(self: *Self, sequence: []const u32, size: f32, options: EmojiRenderOptions) !ColorGlyph {
+        // Emoji modifier base + skin tone modifier
+        const base_cp = sequence[0];
+        const modifier_cp = sequence[1];
+
+        // Try to render the modified emoji
+        for (self.emoji_fonts.items) |font| {
+            if (try self.renderModifiedEmojiWithFont(font, base_cp, modifier_cp, size, options)) |glyph| {
+                return glyph;
+            }
+        }
+
+        // Fallback: render base emoji without modifier
+        return self.renderEmoji(base_cp, size, options) orelse
+               self.renderMonochromeEmoji(base_cp, size);
+    }
+
+    fn renderSequenceWithFont(self: *Self, font: *Font, sequence: []const u32, size: f32, options: EmojiRenderOptions) !?ColorGlyph {
+        // Try to find a single glyph that represents the entire sequence
+        _ = self;
+        _ = font;
+        _ = sequence;
+        _ = size;
+        _ = options;
+
+        // This would require advanced OpenType GSUB table processing
+        // For now, return null to indicate fallback needed
+        return null;
+    }
+
+    fn renderModifiedEmojiWithFont(self: *Self, font: *Font, base: u32, modifier: u32, size: f32, options: EmojiRenderOptions) !?ColorGlyph {
+        // Look for precomposed glyph or use font's modification tables
+        _ = self;
+        _ = font;
+        _ = base;
+        _ = modifier;
+        _ = size;
+        _ = options;
+
+        // This would require COLR table processing with layered rendering
+        // For now, return null to indicate fallback needed
+        return null;
     }
 
     fn isEmojiSequence(self: *Self, codepoint: u32) bool {
@@ -355,55 +538,6 @@ pub const EmojiRenderer = struct {
     }
 };
 
-const UnicodeEmojiData = struct {
-    emoji_ranges: std.ArrayList(EmojiRange),
-    allocator: std.mem.Allocator,
-
-    const EmojiRange = struct {
-        start: u32,
-        end: u32,
-    };
-
-    pub fn init(allocator: std.mem.Allocator) UnicodeEmojiData {
-        var data = UnicodeEmojiData{
-            .emoji_ranges = std.ArrayList(EmojiRange){},
-            .allocator = allocator,
-        };
-
-        data.loadEmojiRanges() catch {};
-        return data;
-    }
-
-    pub fn deinit(self: *UnicodeEmojiData) void {
-        self.emoji_ranges.deinit(self.allocator);
-    }
-
-    fn loadEmojiRanges(self: *UnicodeEmojiData) !void {
-        // Unicode emoji ranges (simplified)
-        const ranges = [_]EmojiRange{
-            .{ .start = 0x1F600, .end = 0x1F64F }, // Emoticons
-            .{ .start = 0x1F300, .end = 0x1F5FF }, // Misc Symbols and Pictographs
-            .{ .start = 0x1F680, .end = 0x1F6FF }, // Transport and Map
-            .{ .start = 0x1F1E6, .end = 0x1F1FF }, // Regional Indicators
-            .{ .start = 0x2600, .end = 0x26FF },   // Miscellaneous Symbols
-            .{ .start = 0x2700, .end = 0x27BF },   // Dingbats
-        };
-
-        for (ranges) |range| {
-            try self.emoji_ranges.append(self.allocator, range);
-        }
-    }
-
-    pub fn isEmoji(self: *UnicodeEmojiData, codepoint: u32) bool {
-        for (self.emoji_ranges.items) |range| {
-            if (codepoint >= range.start and codepoint <= range.end) {
-                return true;
-            }
-        }
-        return false;
-    }
-};
-
 pub const EmojiRenderOptions = struct {
     prefer_color: bool = true,
     skin_tone: SkinTone = .default,
@@ -435,13 +569,28 @@ test "EmojiRenderer basic operations" {
     try std.testing.expect(!renderer.supportsSkinTones(0x1F600)); // 😀
 }
 
-test "Unicode emoji data" {
+test "Unicode emoji detection via Unicode module" {
+    const testing = std.testing;
+
+    // Test emoji detection using Unicode module
+    try testing.expect(Unicode.getEmojiProperty(0x1F600) != .None); // 😀
+    try testing.expect(Unicode.getEmojiProperty(0x2600) != .None);  // ☀
+    try testing.expect(Unicode.getEmojiProperty('A') == .None);
+
+    // Test emoji sequence detection
     const allocator = std.testing.allocator;
+    var renderer = EmojiRenderer.init(allocator);
+    defer renderer.deinit();
 
-    var data = UnicodeEmojiData.init(allocator);
-    defer data.deinit();
+    // Regional indicator sequence (flag)
+    const flag_sequence = [_]u32{ 0x1F1FA, 0x1F1F8 }; // US flag
+    try testing.expect(renderer.isFlagSequence(&flag_sequence));
 
-    try std.testing.expect(data.isEmoji(0x1F600)); // 😀
-    try std.testing.expect(data.isEmoji(0x2600));  // ☀
-    try std.testing.expect(!data.isEmoji('A'));
+    // Skin tone sequence
+    const skin_sequence = [_]u32{ 0x1F44D, 0x1F3FB }; // 👍🏻
+    try testing.expect(renderer.isSkinToneSequence(&skin_sequence));
+
+    // ZWJ sequence
+    const zwj_sequence = [_]u32{ 0x1F468, 0x200D, 0x1F469, 0x200D, 0x1F467 }; // 👨‍👩‍👧
+    try testing.expect(renderer.isZWJSequence(&zwj_sequence));
 }
