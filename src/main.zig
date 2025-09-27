@@ -18,7 +18,7 @@ pub fn main() !void {
     defer layout.deinit();
     std.debug.print("✓ Text layout initialized\n", .{});
 
-    var emoji_renderer = zfont.EmojiRenderer.init(allocator);
+    var emoji_renderer = try zfont.EmojiRenderer.init(allocator);
     defer emoji_renderer.deinit();
     const is_emoji = emoji_renderer.isEmoji(0x1F600);
     std.debug.print("✓ Emoji support: {} detected as emoji\n", .{is_emoji});
@@ -42,7 +42,7 @@ test "ZFont basic functionality" {
     defer layout.deinit();
     try std.testing.expect(layout.runs.items.len == 0);
 
-    var emoji_renderer = zfont.EmojiRenderer.init(allocator);
+    var emoji_renderer = try zfont.EmojiRenderer.init(allocator);
     defer emoji_renderer.deinit();
     try std.testing.expect(emoji_renderer.isEmoji(0x1F600));
     try std.testing.expect(!emoji_renderer.isEmoji('A'));

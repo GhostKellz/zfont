@@ -8,15 +8,17 @@ pub const FontManager = struct {
     font_cache: std.StringHashMap(*Font),
     system_font_paths: std.ArrayList([]const u8),
     fallback_fonts: std.ArrayList(*Font),
+    system_fonts_scanned: bool,
 
     const Self = @This();
 
     pub fn init(allocator: std.mem.Allocator) Self {
         return Self{
             .allocator = allocator,
-            .font_cache = std.StringHashMap(*Font).init(allocator),
+            .font_cache = std.StringHashMap(*Font){},
             .system_font_paths = std.ArrayList([]const u8){},
             .fallback_fonts = std.ArrayList(*Font){},
+            .system_fonts_scanned = false,
         };
     }
 
@@ -33,22 +35,26 @@ pub const FontManager = struct {
         for (self.system_font_paths.items) |path| {
             self.allocator.free(path);
         }
-        self.system_font_paths.deinit(self.allocator);
+        self.system_font_paths.deinit();
 
         // Free fallback fonts
         for (self.fallback_fonts.items) |font| {
             font.deinit();
             self.allocator.destroy(font);
         }
-        self.fallback_fonts.deinit(self.allocator);
+        self.fallback_fonts.deinit();
     }
 
     pub fn scanSystemFonts(self: *Self) !void {
+        if (self.system_fonts_scanned) return;
+
         const system_paths = getSystemFontPaths();
 
         for (system_paths) |path| {
             try self.scanFontDirectory(path);
         }
+
+        self.system_fonts_scanned = true;
     }
 
     fn scanFontDirectory(self: *Self, dir_path: []const u8) !void {
@@ -62,10 +68,7 @@ pub const FontManager = struct {
         while (try iterator.next()) |entry| {
             if (entry.kind == .file) {
                 if (isFontFile(entry.name)) {
-                    const full_path = try std.fs.path.join(
-                        self.allocator,
-                        &[_][]const u8{ dir_path, entry.name }
-                    );
+                    const full_path = try std.fs.path.join(self.allocator, &[_][]const u8{ dir_path, entry.name });
                     try self.system_font_paths.append(full_path);
                 }
             }
@@ -104,6 +107,8 @@ pub const FontManager = struct {
     }
 
     pub fn findFont(self: *Self, family_name: []const u8, options: root.RenderOptions) !?*Font {
+        try self.scanSystemFonts();
+
         // Search through system fonts for matching family name
         for (self.system_font_paths.items) |path| {
             if (std.mem.indexOf(u8, path, family_name)) |_| {
@@ -139,6 +144,22 @@ pub const FontManager = struct {
         return null;
     }
 
+    pub fn registerPreferredFonts(self: *Self, families: []const []const u8) !void {
+        for (families) |family| {
+            const font = try self.findFont(family, .{ .size = 12.0 }) orelse continue;
+            if (!self.hasFallbackFont(font)) {
+                try self.fallback_fonts.append(font);
+            }
+        }
+    }
+
+    fn hasFallbackFont(self: *Self, font: *Font) bool {
+        for (self.fallback_fonts.items) |existing| {
+            if (existing == font) return true;
+        }
+        return false;
+    }
+
     fn loadDefaultFallbacks(self: *Self) !void {
         const fallback_names = [_][]const u8{
             "DejaVu Sans Mono",
@@ -147,6 +168,35 @@ pub const FontManager = struct {
             "Monaco",
             "Menlo",
             "Source Code Pro",
+            "Roboto",
+            "Roboto Slab",
+            "Robot",
+            "Ubuntu",
+            "Cabin",
+            "Adobe Caslon Pro",
+            "Caslon",
+            "DejaVu Sans",
+            "DejaVu Serif",
+            "Droid Sans",
+            "Droid Serif",
+            "Gentium Book Basic",
+            "Gentium Plus",
+            "Gentium",
+            "Linux Libertine",
+            "IM FELL DW Pica",
+            "IM FELL English",
+            "Open Baskerville",
+            "EB Garamond",
+            "Nimbus Mono PS",
+            "Nimbus Sans",
+            "Nimbus Sans L",
+            "Nimbus Roman",
+            "Nimbus Roman No9 L",
+            "URW Bookman",
+            "URW Gothic",
+            "URW Palladio",
+            "URW Chancery L",
+            "Century Schoolbook L",
         };
 
         for (fallback_names) |name| {

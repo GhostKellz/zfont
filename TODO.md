@@ -15,31 +15,40 @@
 
 ---
 
-## Alpha Phase - GhostShell Integration Foundation
-
 ### Core Library Enhancements
 - [ ] **gcode Integration**
-  - [ ] Integrate gcode for Unicode property lookups (<5ns target)
-  - [ ] Replace internal Unicode handling with gcode's O(1) system
-  - [ ] Add grapheme cluster boundary detection
-  - [ ] Implement East Asian Width support via gcode
-  - [ ] Add zero-width character handling
+  - [x] Integrate gcode for Unicode property lookups (<5ns target)
+    - Added `Unicode.PropertyCache` leveraging gcode stage tables for sub-5ns property reads.
+  - [ ] Harden hybrid gcode integration layer
+    - [x] Keep `Unicode.PropertyCache` as the primary facade over gcode stage tables.
+    - [x] Provide wrapper shims (`Unicode`, `grapheme_segmenter`) so downstream code never touches raw gcode APIs directly.
+    - [ ] Track remaining gcode entry points (terminal cursor/performance) and migrate to cache-backed helpers where it measurably helps.
+    - [ ] Document guidance for consumers mixing direct gcode access with zfont helpers and outline the vendored-fallback plan.
+  - [x] Grapheme cluster boundary detection
+    - [x] Expose `Unicode.graphemeIterator` and integrate clusters in text layout shaping.
+    - [x] Extend terminal cursor and selection logic to operate on cluster boundaries.
+  - [ ] East Asian Width support via gcode
+    - [x] Provide `Unicode.stringWidthWithMode` and ambiguous-wide handling.
+    - [x] Apply width modes across terminal measurement paths and document usage.
+  - [x] Add zero-width character handling
+    - Text layout and measurement now skip control/zero-width advances using cached gcode metadata.
 
 - [ ] **Performance Optimizations**
-  - [ ] GPU-accelerated glyph caching system
-  - [ ] NVIDIA-specific optimizations for ghostshell
-  - [ ] Multi-threaded font loading
-  - [ ] Memory-mapped font file support
-  - [ ] Glyph atlas texture optimization
-  - [ ] SIMD-optimized blending operations
+  - [x] GPU-accelerated glyph caching system
+  - [x] NVIDIA-specific optimizations for ghostshell
+  - [x] Multi-threaded font loading
+  - [x] Memory-mapped font file support
+  - [x] Glyph atlas texture optimization
+  - [x] SIMD-optimized blending operations
 
-- [ ] **Advanced Emoji Support**
-  - [ ] ZWJ (Zero-Width Joiner) sequence rendering
-  - [ ] Skin tone modifier support (U+1F3FB-U+1F3FF)
-  - [ ] Regional indicator flag sequences
-  - [ ] Emoji variation selectors (text vs emoji presentation)
-  - [ ] Complex emoji sequence parsing
-  - [ ] Platform-specific emoji fonts (Windows, macOS, Linux)
+- [x] **Advanced Emoji Support**
+  - [x] ZWJ (Zero-Width Joiner) sequence rendering — handled via `EmojiRenderer.renderEmojiSequence` with `EmojiSequenceProcessor` analysis
+  - [x] Skin tone modifier support (U+1F3FB-U+1F3FF) — automatic tinting and preference-aware rendering
+  - [x] Regional indicator flag sequences — detected and composed through new sequence helpers
+  - [x] Emoji variation selectors (text vs emoji presentation) — honored through presentation analysis and renderer options
+  - [x] Complex emoji sequence parsing — `EmojiSequenceProcessor` caches extended metadata for keycaps, tags, and multi-part clusters
+  - [x] Platform-specific emoji fonts (Windows, macOS, Linux) — `FontManager` discovers native color fonts and builds a fallback chain
+  
 
 ### GhostShell Integration
 - [ ] **Terminal-Specific Optimizations**

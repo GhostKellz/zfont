@@ -11,6 +11,7 @@ ZFont is a modern font rendering library written in pure Zig with advanced Unico
 - **[Performance Benchmarks](PERFORMANCE.md)** - Detailed performance comparisons
 - **[Migration Guide](MIGRATION.md)** - How to migrate from HarfBuzz/ICU
 - **[Terminal Integration](TERMINAL_INTEGRATION.md)** - Terminal-specific features and patterns
+- **[Font Catalog & Licensing](FONTS.md)** - Recommended families and licensing guidance
 
 ### Examples
 - **[Arabic Text Processing](../examples/arabic_text.zig)** - Arabic contextual forms and BiDi

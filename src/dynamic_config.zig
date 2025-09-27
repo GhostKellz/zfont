@@ -1,5 +1,6 @@
 const std = @import("std");
 const root = @import("root.zig");
+const Unicode = @import("unicode.zig").Unicode;
 
 // Dynamic configuration system for runtime font and theme changes
 // Supports hot-reloading and live configuration updates
@@ -34,6 +35,7 @@ pub const DynamicConfig = struct {
         cursor_shape: CursorShape,
         window_padding_x: u32,
         window_padding_y: u32,
+        east_asian_width_mode: Unicode.EastAsianWidthMode,
 
         pub fn init(_: std.mem.Allocator) Config {
             return Config{
@@ -51,6 +53,7 @@ pub const DynamicConfig = struct {
                 .cursor_shape = .block,
                 .window_padding_x = 2,
                 .window_padding_y = 2,
+                .east_asian_width_mode = .standard,
             };
         }
 
@@ -127,7 +130,7 @@ pub const DynamicConfig = struct {
             // Parse key=value pairs
             if (std.mem.indexOf(u8, trimmed, "=")) |eq_pos| {
                 const key = std.mem.trim(u8, trimmed[0..eq_pos], " \t");
-                const value = std.mem.trim(u8, trimmed[eq_pos + 1..], " \t");
+                const value = std.mem.trim(u8, trimmed[eq_pos + 1 ..], " \t");
 
                 try self.setConfigValue(&new_config, key, value);
             }
@@ -157,19 +160,17 @@ pub const DynamicConfig = struct {
         } else if (std.mem.eql(u8, key, "enable-kerning")) {
             config.enable_kerning = std.mem.eql(u8, value, "true");
         } else if (std.mem.eql(u8, key, "zero-style")) {
-            config.zero_style = if (std.mem.eql(u8, value, "slashed")) .slashed
-                              else if (std.mem.eql(u8, value, "dotted")) .dotted
-                              else .normal;
+            config.zero_style = if (std.mem.eql(u8, value, "slashed")) .slashed else if (std.mem.eql(u8, value, "dotted")) .dotted else .normal;
         } else if (std.mem.eql(u8, key, "cursor-blink")) {
             config.cursor_blink = std.mem.eql(u8, value, "true");
         } else if (std.mem.eql(u8, key, "cursor-shape")) {
-            config.cursor_shape = if (std.mem.eql(u8, value, "underline")) .underline
-                                 else if (std.mem.eql(u8, value, "bar")) .bar
-                                 else .block;
+            config.cursor_shape = if (std.mem.eql(u8, value, "underline")) .underline else if (std.mem.eql(u8, value, "bar")) .bar else .block;
         } else if (std.mem.eql(u8, key, "window-padding-x")) {
             config.window_padding_x = try std.fmt.parseInt(u32, value, 10);
         } else if (std.mem.eql(u8, key, "window-padding-y")) {
             config.window_padding_y = try std.fmt.parseInt(u32, value, 10);
+        } else if (std.mem.eql(u8, key, "east-asian-width-mode")) {
+            config.east_asian_width_mode = try parseEastAsianWidthMode(value);
         }
         // Add more config options as needed
     }
@@ -233,6 +234,11 @@ pub const DynamicConfig = struct {
         // Window settings
         try writer.print("window-padding-x={d}\n", .{self.current_config.window_padding_x});
         try writer.print("window-padding-y={d}\n", .{self.current_config.window_padding_y});
+        const width_mode_str = switch (self.current_config.east_asian_width_mode) {
+            .standard => "standard",
+            .wide => "wide",
+        };
+        try writer.print("east-asian-width-mode={s}\n", .{width_mode_str});
 
         // Available themes comment
         try writer.writeAll("\n# Available themes:\n");
@@ -241,6 +247,13 @@ pub const DynamicConfig = struct {
         try writer.writeAll("# - solarized-dark\n");
         try writer.writeAll("# - catppuccin\n");
         try writer.writeAll("# - vibrant-dark\n");
+    }
+
+    fn parseEastAsianWidthMode(value: []const u8) !Unicode.EastAsianWidthMode {
+        if (std.ascii.eqlIgnoreCase(value, "standard")) return .standard;
+        if (std.ascii.eqlIgnoreCase(value, "wide")) return .wide;
+
+        return error.InvalidMode;
     }
 
     pub fn addWatcher(self: *Self, callback: *const fn (config: *const Config) void) !void {

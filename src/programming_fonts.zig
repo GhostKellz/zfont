@@ -142,13 +142,98 @@ pub const ProgrammingFontManager = struct {
 
     pub fn loadProgrammingFonts(self: *Self, font_manager: *FontManager) !void {
         const programming_font_names = [_][]const u8{
+            // Classic workhorses
             "Fira Code",
+            "FiraCode Nerd Font",
+            "FiraCode NF",
             "JetBrains Mono",
+            "JetBrainsMono Nerd Font",
+            "JetBrainsMono NF",
             "Source Code Pro",
+            "SourceCodePro Nerd Font",
+            "SourceCodePro NF",
             "Cascadia Code",
+            "Cascadia Mono",
+            "CaskaydiaCove Nerd Font",
+            "CaskaydiaCove NF",
+            // High-personality monos
             "Hack",
-            "Inconsolata",
+            "Hack Nerd Font",
+            "Hack NF",
+            "Iosevka",
+            "Iosevka Term",
+            "Iosevka Fixed",
+            "Iosevka Nerd Font",
+            "Iosevka NF",
             "Victor Mono",
+            "VictorMono Nerd Font",
+            "VictorMono NF",
+            // Nerd Font powerhouses & Meslo variants
+            "MesloLGS NF",
+            "MesloLGS Nerd Font",
+            "Meslo LG S",
+            // Retro & nostalgia
+            "IBM Plex Mono",
+            "IBM Plex Mono Nerd Font",
+            "Terminus",
+            "Terminus (TTF)",
+            "PxPlus IBM VGA8",
+            "ProggyClean",
+            // High-density CJK & multilingual
+            "Sarasa Gothic",
+            "Sarasa Mono SC",
+            "Sarasa Mono TC",
+            "Sarasa Mono J",
+            "Sarasa Mono K",
+            "Sarasa Fixed SC",
+            "Sarasa Fixed TC",
+            "Noto Sans Mono CJK SC",
+            "Noto Sans Mono CJK TC",
+            "Noto Sans Mono CJK JP",
+            "Noto Sans Mono CJK KR",
+            // Experimental newcomers
+            "Monaspace Neon",
+            "Monaspace Argon",
+            "Monaspace Xenon",
+            "Monaspace Radon",
+            "Monaspace Krypton",
+            "Recursive Mono",
+            "Recursive Mono Casual Static",
+            "Recursive Mono Linear Static",
+            // Popular proportional developer fonts
+            "Robot",
+            "Roboto",
+            "Roboto Slab",
+            "Ubuntu",
+            "Cabin",
+            "Adobe Caslon Pro",
+            "Caslon",
+            "DejaVu Sans",
+            "DejaVu Serif",
+            "DejaVu",
+            "Droid Sans",
+            "Droid Serif",
+            "Gentium Book Basic",
+            "Gentium Plus",
+            "Gentium",
+            "Linux Libertine",
+            "IM FELL DW Pica",
+            "IM FELL English",
+            "Open Baskerville",
+            "EB Garamond",
+            // Ghostscript / URW fonts commonly bundled with Ghostscript
+            "Nimbus Mono PS",
+            "Nimbus Sans",
+            "Nimbus Sans L",
+            "Nimbus Roman",
+            "Nimbus Roman No9 L",
+            "URW Bookman",
+            "URW Gothic",
+            "URW Palladio",
+            "URW Chancery L",
+            "Century Schoolbook L",
+            // Existing favorites already supported
+            "Inconsolata",
             "Ubuntu Mono",
             "Roboto Mono",
             "SF Mono",
@@ -183,8 +268,9 @@ pub const ProgrammingFontManager = struct {
                 const lig_info = entry.value_ptr.*;
 
                 if (i + sequence.len <= text.len and
-                    std.mem.eql(u8, text[i..i + sequence.len], sequence) and
-                    sequence.len > max_length) {
+                    std.mem.eql(u8, text[i .. i + sequence.len], sequence) and
+                    sequence.len > max_length)
+                {
 
                     // Check if font supports this ligature
                     if (self.fontSupportsLigature(font, lig_info)) {

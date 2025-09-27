@@ -271,9 +271,16 @@ pub const PowerLevel10k = struct {
         // Try to load a Powerline-compatible font
         const powerline_names = [_][]const u8{
             "Source Code Pro for Powerline",
+            "SourceCodePro Nerd Font",
             "Fira Code",
+            "FiraCode Nerd Font",
             "JetBrains Mono",
+            "JetBrainsMono Nerd Font",
             "Cascadia Code PL",
+            "CaskaydiaCove Nerd Font",
+            "Hack Nerd Font",
+            "IBM Plex Mono Nerd Font",
+            "MesloLGS Nerd Font",
         };
 
         for (powerline_names) |font_name| {

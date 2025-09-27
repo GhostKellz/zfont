@@ -1,6 +1,7 @@
 const std = @import("std");
 const root = @import("root.zig");
 const gcode = @import("gcode");
+const Unicode = @import("unicode.zig").Unicode;
 
 // Terminal scrolling performance optimizer using gcode intelligence
 // Optimizes text processing for high-speed terminal operations
@@ -9,6 +10,7 @@ pub const TerminalPerformanceOptimizer = struct {
     script_detector: gcode.script.ScriptDetector,
     cache: RenderCache,
     settings: OptimizationSettings,
+    east_asian_mode: Unicode.EastAsianWidthMode,
 
     const Self = @This();
 
@@ -27,8 +29,8 @@ pub const TerminalPerformanceOptimizer = struct {
         pub fn eql(self: @This(), a: CacheKey, b: CacheKey) bool {
             _ = self;
             return a.text_hash == b.text_hash and
-                   a.font_size == b.font_size and
-                   a.terminal_width == b.terminal_width;
+                a.font_size == b.font_size and
+                a.terminal_width == b.terminal_width;
         }
     };
 
@@ -53,6 +55,7 @@ pub const TerminalPerformanceOptimizer = struct {
         viewport_buffer_lines: u32 = 5,
         enable_incremental_updates: bool = true,
         enable_background_processing: bool = true,
+        east_asian_width_mode: Unicode.EastAsianWidthMode = .standard,
     };
 
     pub const LineSegment = struct {
@@ -75,9 +78,9 @@ pub const TerminalPerformanceOptimizer = struct {
     };
 
     pub const ComplexityLevel = enum(u8) {
-        simple = 0,     // ASCII text
-        moderate = 1,   // CJK or extended Latin
-        complex = 2,    // Arabic, Indic with shaping
+        simple = 0, // ASCII text
+        moderate = 1, // CJK or extended Latin
+        complex = 2, // Arabic, Indic with shaping
         very_complex = 3, // Mixed scripts with BiDi
     };
 
@@ -87,6 +90,7 @@ pub const TerminalPerformanceOptimizer = struct {
             .script_detector = try gcode.script.ScriptDetector.init(allocator),
             .cache = RenderCache.init(allocator),
             .settings = settings,
+            .east_asian_mode = settings.east_asian_width_mode,
         };
     }
 
@@ -94,6 +98,10 @@ pub const TerminalPerformanceOptimizer = struct {
         self.script_detector.deinit();
         self.clearCache();
         self.cache.deinit();
+    }
+
+    pub fn setEastAsianWidthMode(self: *Self, mode: Unicode.EastAsianWidthMode) void {
+        self.east_asian_mode = mode;
     }
 
     fn clearCache(self: *Self) void {
@@ -153,7 +161,7 @@ pub const TerminalPerformanceOptimizer = struct {
             const char_len = std.unicode.utf8ByteSequenceLength(text[byte_pos]) catch 1;
             if (byte_pos + char_len > text.len) break;
 
-            const codepoint = std.unicode.utf8Decode(text[byte_pos..byte_pos + char_len]) catch {
+            const codepoint = std.unicode.utf8Decode(text[byte_pos .. byte_pos + char_len]) catch {
                 byte_pos += 1;
                 continue;
             };
@@ -183,17 +191,17 @@ pub const TerminalPerformanceOptimizer = struct {
         _ = self;
         // Arabic, Hebrew
         return (codepoint >= 0x0590 and codepoint <= 0x05FF) or // Hebrew
-               (codepoint >= 0x0600 and codepoint <= 0x06FF) or // Arabic
-               (codepoint >= 0x0750 and codepoint <= 0x077F);   // Arabic Supplement
+            (codepoint >= 0x0600 and codepoint <= 0x06FF) or // Arabic
+            (codepoint >= 0x0750 and codepoint <= 0x077F); // Arabic Supplement
     }
 
     fn isComplexScript(self: *Self, codepoint: u32) bool {
         _ = self;
         // Arabic, Devanagari, Bengali, Tamil, etc.
         return (codepoint >= 0x0600 and codepoint <= 0x06FF) or // Arabic
-               (codepoint >= 0x0900 and codepoint <= 0x097F) or // Devanagari
-               (codepoint >= 0x0980 and codepoint <= 0x09FF) or // Bengali
-               (codepoint >= 0x0B80 and codepoint <= 0x0BFF);   // Tamil
+            (codepoint >= 0x0900 and codepoint <= 0x097F) or // Devanagari
+            (codepoint >= 0x0980 and codepoint <= 0x09FF) or // Bengali
+            (codepoint >= 0x0B80 and codepoint <= 0x0BFF); // Tamil
     }
 
     fn optimizeSimpleText(self: *Self, text: []const u8, viewport_start: usize, viewport_end: usize, terminal_width: u32) !ScrollOptimizedResult {
@@ -208,14 +216,15 @@ pub const TerminalPerformanceOptimizer = struct {
         var current_width: u32 = 0;
 
         for (visible_text, 0..) |byte, i| {
-            if (byte == '\n' or current_width >= terminal_width) {
+            const char_width = @as(u32, Unicode.getDisplayWidth(@intCast(byte), self.east_asian_mode));
+            if (byte == '\n' or (terminal_width > 0 and current_width + char_width > terminal_width and current_width > 0)) {
                 // Complete line
                 const line_text = visible_text[line_start..i];
                 const segment = LineSegment{
                     .text = line_text,
                     .start_byte = viewport_start + line_start,
                     .end_byte = viewport_start + i,
-                    .display_width = @floatFromInt(i - line_start),
+                    .display_width = @floatFromInt(self.measureColumns(line_text)),
                     .script_runs = &[_]ScriptRun{},
                     .complexity_level = .simple,
                     .needs_bidi = false,
@@ -226,7 +235,7 @@ pub const TerminalPerformanceOptimizer = struct {
                 line_start = i + 1;
                 current_width = 0;
             } else {
-                current_width += 1;
+                current_width += char_width;
             }
         }
 
@@ -237,7 +246,7 @@ pub const TerminalPerformanceOptimizer = struct {
                 .text = line_text,
                 .start_byte = viewport_start + line_start,
                 .end_byte = viewport_start + visible_text.len,
-                .display_width = @floatFromInt(visible_text.len - line_start),
+                .display_width = @floatFromInt(self.measureColumns(line_text)),
                 .script_runs = &[_]ScriptRun{},
                 .complexity_level = .simple,
                 .needs_bidi = false,
@@ -270,7 +279,7 @@ pub const TerminalPerformanceOptimizer = struct {
             const run_width = self.estimateRunWidth(run);
 
             // Check if run fits on current line
-            if (current_width + run_width > @as(f32, @floatFromInt(terminal_width)) and current_width > 0) {
+            if (terminal_width > 0 and current_width + run_width > @as(f32, @floatFromInt(terminal_width)) and current_width > 0) {
                 // Complete current line
                 try self.completeLine(&lines, visible_text, current_line_start, run.start, viewport_start, script_runs, .moderate);
                 current_line_start = run.start;
@@ -326,7 +335,7 @@ pub const TerminalPerformanceOptimizer = struct {
         for (script_runs) |run| {
             const run_width = self.estimateComplexRunWidth(run);
 
-            if (current_width + run_width > @as(f32, @floatFromInt(terminal_width)) and current_width > 0) {
+            if (terminal_width > 0 and current_width + run_width > @as(f32, @floatFromInt(terminal_width)) and current_width > 0) {
                 try self.completeComplexLine(&lines, visible_text, current_line_start, run.start, viewport_start, script_runs, bidi_runs);
                 current_line_start = run.start;
                 current_width = 0;
@@ -352,48 +361,25 @@ pub const TerminalPerformanceOptimizer = struct {
     }
 
     fn estimateRunWidth(self: *Self, run: gcode.script.ScriptRun) f32 {
-        _ = self;
-
-        // Estimate character width based on script
-        const base_width: f32 = switch (run.script_info.script) {
-            .han, .hiragana, .katakana, .hangul => 2.0, // CJK double-width
-            else => 1.0,
-        };
-
-        return base_width * @as(f32, @floatFromInt(run.text.len));
+        return @as(f32, @floatFromInt(self.measureColumns(run.text)));
     }
 
     fn estimateComplexRunWidth(self: *Self, run: gcode.script.ScriptRun) f32 {
-        _ = self;
-
-        // More sophisticated width estimation for complex scripts
-        var width: f32 = 0;
-
-        for (run.text) |byte| {
-            const cp = @as(u32, byte); // Simplified - would need proper UTF-8 decoding
-
-            if ((cp >= 0x4E00 and cp <= 0x9FFF) or // CJK
-                (cp >= 0x3040 and cp <= 0x30FF) or // Japanese
-                (cp >= 0xAC00 and cp <= 0xD7AF)) { // Hangul
-                width += 2.0;
-            } else if (cp >= 0x1F600 and cp <= 0x1F6FF) { // Emoji
-                width += 2.0;
-            } else {
-                width += 1.0;
-            }
-        }
-
-        return width;
+        return @as(f32, @floatFromInt(self.measureColumns(run.text)));
     }
 
-    fn completeLine(_: *Self, lines: *std.ArrayList(LineSegment), text: []const u8, start: usize, end: usize, offset: usize, _: []const gcode.script.ScriptRun, complexity: ComplexityLevel) !void {
+    fn measureColumns(self: *Self, text: []const u8) usize {
+        if (text.len == 0) return 0;
+        return Unicode.stringWidthWithMode(text, self.east_asian_mode);
+    }
 
+    fn completeLine(self: *Self, lines: *std.ArrayList(LineSegment), text: []const u8, start: usize, end: usize, offset: usize, _: []const gcode.script.ScriptRun, complexity: ComplexityLevel) !void {
         const line_text = text[start..end];
         const segment = LineSegment{
             .text = line_text,
             .start_byte = offset + start,
             .end_byte = offset + end,
-            .display_width = @floatFromInt(end - start),
+            .display_width = @floatFromInt(self.measureColumns(line_text)),
             .script_runs = &[_]ScriptRun{},
             .complexity_level = complexity,
             .needs_bidi = false,
@@ -402,14 +388,13 @@ pub const TerminalPerformanceOptimizer = struct {
         try lines.append(segment);
     }
 
-    fn completeComplexLine(_: *Self, lines: *std.ArrayList(LineSegment), text: []const u8, start: usize, end: usize, offset: usize, _: []const gcode.script.ScriptRun, _: []const gcode.bidi.BiDiRun) !void {
-
+    fn completeComplexLine(self: *Self, lines: *std.ArrayList(LineSegment), text: []const u8, start: usize, end: usize, offset: usize, _: []const gcode.script.ScriptRun, _: []const gcode.bidi.BiDiRun) !void {
         const line_text = text[start..end];
         const segment = LineSegment{
             .text = line_text,
             .start_byte = offset + start,
             .end_byte = offset + end,
-            .display_width = @floatFromInt(end - start),
+            .display_width = @floatFromInt(self.measureColumns(line_text)),
             .script_runs = &[_]ScriptRun{},
             .complexity_level = .complex,
             .needs_bidi = true,
@@ -529,11 +514,7 @@ pub const TerminalPerformanceOptimizer = struct {
             defer result.deinit();
             const end = std.time.milliTimestamp();
 
-            std.log.info("  Optimization level: {}, Lines: {}, Time: {}ms", .{
-                @tagName(result.optimization_level),
-                result.total_lines,
-                end - start
-            });
+            std.log.info("  Optimization level: {}, Lines: {}, Time: {}ms", .{ @tagName(result.optimization_level), result.total_lines, end - start });
         }
     }
 };

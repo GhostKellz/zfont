@@ -37,6 +37,7 @@ pub const CJKWidthProcessor = @import("cjk_width.zig").CJKWidthProcessor;
 pub const EmojiSequenceProcessor = @import("emoji_sequences.zig").EmojiSequenceProcessor;
 pub const TerminalCursorProcessor = @import("terminal_cursor.zig").TerminalCursorProcessor;
 pub const TerminalPerformanceOptimizer = @import("terminal_performance.zig").TerminalPerformanceOptimizer;
+pub const GraphemeSegmenter = @import("grapheme_segmenter.zig").GraphemeSegmenter;
 
 pub const FontError = error{
     InvalidFontData,

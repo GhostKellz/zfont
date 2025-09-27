@@ -28,8 +28,8 @@ pub const GlyphRenderer = struct {
         pub fn eql(self: @This(), a: RenderKey, b: RenderKey) bool {
             _ = self;
             return a.glyph_index == b.glyph_index and
-                   a.size == b.size and
-                   a.options_hash == b.options_hash;
+                a.size == b.size and
+                a.options_hash == b.options_hash;
         }
     };
 
@@ -181,10 +181,12 @@ pub const GlyphRenderer = struct {
             for (0..width) |x| {
                 const index = y * width + x;
                 if (x < border or x >= width - border or
-                    y < border or y >= height - border) {
+                    y < border or y >= height - border)
+                {
                     bitmap[index] = 255;
                 } else if (x < border * 2 or x >= width - border * 2 or
-                          y < border * 2 or y >= height - border * 2) {
+                    y < border * 2 or y >= height - border * 2)
+                {
                     bitmap[index] = 128;
                 } else {
                     bitmap[index] = 0;
@@ -221,7 +223,7 @@ pub const GlyphRenderer = struct {
                 const value = bitmap[src_index];
 
                 // Simple RGB distribution
-                new_bitmap[dst_index] = value;     // R
+                new_bitmap[dst_index] = value; // R
                 new_bitmap[dst_index + 1] = value; // G
                 new_bitmap[dst_index + 2] = value; // B
             }

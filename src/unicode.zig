@@ -5,6 +5,38 @@ const gcode = @import("gcode");
 // This provides O(1) Unicode property lookups using gcode's optimized lookup tables
 
 pub const Unicode = struct {
+    const TableType = @TypeOf(gcode.table);
+
+    pub const PropertyCache = struct {
+        table: *const TableType,
+        cached_stage1: u32,
+        cached_stage2: [*]const u16,
+
+        pub fn init() PropertyCache {
+            return PropertyCache{
+                .table = &gcode.table,
+                .cached_stage1 = std.math.maxInt(u32),
+                .cached_stage2 = undefined,
+            };
+        }
+
+        pub inline fn lookupRaw(self: *PropertyCache, codepoint: u32) gcode.Properties {
+            const cp: u21 = @intCast(codepoint);
+            const stage1_idx = cp >> 8;
+            if (stage1_idx != self.cached_stage1) {
+                self.cached_stage1 = stage1_idx;
+                const stage2_index = self.table.stage1[stage1_idx];
+                self.cached_stage2 = self.table.stage2.ptr + stage2_index * 256;
+            }
+
+            const stage3_index = self.cached_stage2[cp & 0xFF];
+            return self.table.stage3[stage3_index];
+        }
+
+        pub inline fn get(self: *PropertyCache, codepoint: u32) Properties {
+            return buildProperties(codepoint, self.lookupRaw(codepoint));
+        }
+    };
     // Re-export gcode types with our naming conventions for compatibility
     pub const CharacterWidth = enum(u8) {
         zero = 0,
@@ -111,70 +143,6 @@ pub const Unicode = struct {
         Phoenician,
         Phags_Pa,
         Nko,
-
-        pub fn detectFromCodepoint(codepoint: u21) ScriptProperty {
-            // Basic script detection based on Unicode ranges
-            return switch (codepoint) {
-                // Basic Latin
-                0x0000...0x007F => .Latin,
-                // Latin-1 Supplement and Extended
-                0x0080...0x024F => .Latin,
-                // Greek
-                0x0370...0x03FF => .Greek,
-                // Cyrillic
-                0x0400...0x04FF, 0x0500...0x052F => .Cyrillic,
-                // Armenian
-                0x0530...0x058F => .Armenian,
-                // Hebrew
-                0x0590...0x05FF => .Hebrew,
-                // Arabic
-                0x0600...0x06FF, 0x0750...0x077F, 0x08A0...0x08FF, 0xFB50...0xFDFF, 0xFE70...0xFEFF => .Arabic,
-                // Devanagari
-                0x0900...0x097F => .Devanagari,
-                // Bengali
-                0x0980...0x09FF => .Bengali,
-                // Gurmukhi
-                0x0A00...0x0A7F => .Gurmukhi,
-                // Gujarati
-                0x0A80...0x0AFF => .Gujarati,
-                // Oriya
-                0x0B00...0x0B7F => .Oriya,
-                // Tamil
-                0x0B80...0x0BFF => .Tamil,
-                // Telugu
-                0x0C00...0x0C7F => .Telugu,
-                // Kannada
-                0x0C80...0x0CFF => .Kannada,
-                // Malayalam
-                0x0D00...0x0D7F => .Malayalam,
-                // Thai
-                0x0E00...0x0E7F => .Thai,
-                // Lao
-                0x0E80...0x0EFF => .Lao,
-                // Tibetan
-                0x0F00...0x0FFF => .Tibetan,
-                // Myanmar
-                0x1000...0x109F => .Myanmar,
-                // Georgian
-                0x10A0...0x10FF, 0x2D00...0x2D2F => .Georgian,
-                // Hangul
-                0x1100...0x11FF, 0x3130...0x318F, 0xAC00...0xD7AF => .Hangul,
-                // Hiragana
-                0x3040...0x309F => .Hiragana,
-                // Katakana
-                0x30A0...0x30FF, 0x31F0...0x31FF => .Katakana,
-                // Han (CJK)
-                0x2E80...0x2EFF, 0x2F00...0x2FDF, 0x3400...0x4DBF, 0x4E00...0x9FFF,
-                0xF900...0xFAFF, 0x20000...0x2A6DF, 0x2A700...0x2B73F, 0x2B740...0x2B81F,
-                0x2B820...0x2CEAF, 0x2CEB0...0x2EBEF, 0x30000...0x3134F => .Han,
-                // Common (punctuation, symbols, etc.)
-                0x2000...0x206F, 0x2070...0x209F, 0x20A0...0x20CF, 0x2100...0x214F,
-                0x2150...0x218F, 0x2190...0x21FF, 0x2200...0x22FF, 0x2300...0x23FF,
-                0x2400...0x243F, 0x2440...0x245F, 0x2460...0x24FF, 0x2500...0x257F,
-                0x2580...0x259F, 0x25A0...0x25FF, 0x2600...0x26FF, 0x2700...0x27BF => .Common,
-                else => .Unknown,
-            };
-        }
     };
 
     pub const Properties = struct {
@@ -187,19 +155,15 @@ pub const Unicode = struct {
         is_combining: bool,
     };
 
-    // High-performance Unicode property lookup using gcode
-    pub fn getProperties(codepoint: u32) Properties {
-        const gcode_props = gcode.getProperties(@intCast(codepoint));
+    pub const EastAsianWidthMode = enum {
+        standard, // Ambiguous characters treated as narrow (default)
+        wide, // Ambiguous characters treated as wide for CJK contexts
+    };
 
-        return Properties{
-            .width = CharacterWidth.fromGcodeWidth(gcode_props.width),
-            .grapheme_break = gcode_props.grapheme_boundary_class,
-            .emoji = EmojiProperty.fromGraphemeClass(gcode_props.grapheme_boundary_class),
-            .script = ScriptProperty.detectFromCodepoint(@intCast(codepoint)),
-            .is_control = isControl(codepoint),
-            .is_whitespace = isWhitespace(codepoint),
-            .is_combining = gcode_props.combining_class > 0,
-        };
+    // High-performance Unicode property lookup using gcode
+    pub inline fn getProperties(codepoint: u32) Properties {
+        const gcode_props = gcode.getProperties(@intCast(codepoint));
+        return buildProperties(codepoint, gcode_props);
     }
 
     pub fn getCharacterWidth(codepoint: u32) CharacterWidth {
@@ -256,7 +220,7 @@ pub const Unicode = struct {
     }
 
     pub fn getScriptProperty(codepoint: u32) ScriptProperty {
-        return ScriptProperty.detectFromCodepoint(@intCast(codepoint));
+        return convertScript(gcode.getScript(@intCast(codepoint)));
     }
 
     pub fn isControl(codepoint: u32) bool {
@@ -298,8 +262,32 @@ pub const Unicode = struct {
     }
 
     // String processing utilities using gcode
+    pub fn getDisplayWidth(codepoint: u32, mode: EastAsianWidthMode) u8 {
+        const props = gcode.getProperties(@intCast(codepoint));
+
+        if (props.width == 0) return 0;
+
+        if (mode == .wide and props.ambiguous_width) {
+            return 2;
+        }
+
+        const width_value: u8 = @intCast(props.width);
+        return width_value;
+    }
+
+    pub fn stringWidthWithMode(utf8_string: []const u8, mode: EastAsianWidthMode) usize {
+        var iter = gcode.codePointIterator(utf8_string);
+        var width: usize = 0;
+
+        while (iter.next()) |cp| {
+            width += @as(usize, getDisplayWidth(cp.code, mode));
+        }
+
+        return width;
+    }
+
     pub fn stringWidth(utf8_string: []const u8) usize {
-        return gcode.stringWidth(utf8_string);
+        return stringWidthWithMode(utf8_string, .standard);
     }
 
     pub fn graphemeIterator(utf8_string: []const u8) gcode.GraphemeIterator {
@@ -318,6 +306,88 @@ pub const Unicode = struct {
     pub fn findNextGrapheme(text: []const u8, pos: usize) usize {
         return gcode.findNextGrapheme(text, pos);
     }
+    inline fn buildProperties(codepoint: u32, gcode_props: gcode.Properties) Properties {
+        return Properties{
+            .width = CharacterWidth.fromGcodeWidth(gcode_props.width),
+            .grapheme_break = gcode_props.grapheme_boundary_class,
+            .emoji = EmojiProperty.fromGraphemeClass(gcode_props.grapheme_boundary_class),
+            .script = convertScript(gcode.getScript(@intCast(codepoint))),
+            .is_control = isControl(codepoint),
+            .is_whitespace = isWhitespace(codepoint),
+            .is_combining = gcode_props.combining_class > 0,
+        };
+    }
+    fn convertScript(script: gcode.Script) ScriptProperty {
+        return switch (script) {
+            .Common => .Common,
+            .Inherited => .Inherited,
+            .Latin => .Latin,
+            .Greek => .Greek,
+            .Cyrillic => .Cyrillic,
+            .Armenian => .Armenian,
+            .Hebrew => .Hebrew,
+            .Arabic => .Arabic,
+            .Syriac => .Syriac,
+            .Thaana => .Thaana,
+            .Devanagari => .Devanagari,
+            .Bengali => .Bengali,
+            .Gurmukhi => .Gurmukhi,
+            .Gujarati => .Gujarati,
+            .Oriya => .Oriya,
+            .Tamil => .Tamil,
+            .Telugu => .Telugu,
+            .Kannada => .Kannada,
+            .Malayalam => .Malayalam,
+            .Sinhala => .Sinhala,
+            .Thai => .Thai,
+            .Lao => .Lao,
+            .Tibetan => .Tibetan,
+            .Myanmar => .Myanmar,
+            .Georgian => .Georgian,
+            .Hangul => .Hangul,
+            .Ethiopic => .Ethiopic,
+            .Cherokee => .Cherokee,
+            .Canadian_Aboriginal => .Canadian_Aboriginal,
+            .Ogham => .Ogham,
+            .Runic => .Runic,
+            .Khmer => .Khmer,
+            .Mongolian => .Mongolian,
+            .Hiragana => .Hiragana,
+            .Katakana => .Katakana,
+            .Bopomofo => .Bopomofo,
+            .Han => .Han,
+            .Yi => .Yi,
+            .Old_Italic => .Old_Italic,
+            .Gothic => .Gothic,
+            .Deseret => .Deseret,
+            .Tagalog => .Tagalog,
+            .Hanunoo => .Hanunoo,
+            .Buhid => .Buhid,
+            .Tagbanwa => .Tagbanwa,
+            .Limbu => .Limbu,
+            .Tai_Le => .Tai_Le,
+            .Linear_B => .Linear_B,
+            .Ugaritic => .Ugaritic,
+            .Shavian => .Shavian,
+            .Osmanya => .Osmanya,
+            .Cypriot => .Cypriot,
+            .Braille => .Braille,
+            .Buginese => .Buginese,
+            .Coptic => .Coptic,
+            .New_Tai_Lue => .New_Tai_Lue,
+            .Glagolitic => .Glagolitic,
+            .Tifinagh => .Tifinagh,
+            .Syloti_Nagri => .Syloti_Nagri,
+            .Old_Persian => .Old_Persian,
+            .Kharoshthi => .Kharoshthi,
+            .Balinese => .Balinese,
+            .Cuneiform => .Cuneiform,
+            .Phoenician => .Phoenician,
+            .Phags_Pa => .Phags_Pa,
+            .Nko => .Nko,
+            else => .Unknown,
+        };
+    }
 };
 
 // Tests
@@ -334,6 +404,8 @@ test "Unicode gcode integration" {
     try testing.expect(props.width == .narrow);
     try testing.expect(!props.is_control);
     try testing.expect(!props.is_whitespace);
+    try testing.expect(Unicode.getScriptProperty('A') == .Latin);
+    try testing.expect(Unicode.getScriptProperty('中') == .Han);
 
     // Test control character
     const control_props = Unicode.getProperties(0x07); // Bell
@@ -359,10 +431,31 @@ test "Unicode string processing" {
     // Test string width calculation
     const width = Unicode.stringWidth("Hello 世界");
     try testing.expect(width > 5); // Should account for wide characters
+    const ambiguous_standard = Unicode.stringWidthWithMode("·", .standard);
+    try testing.expectEqual(@as(usize, 1), ambiguous_standard);
+    const ambiguous_wide = Unicode.stringWidthWithMode("·", .wide);
+    try testing.expectEqual(@as(usize, 2), ambiguous_wide);
 
     // Test grapheme iteration
     var iter = Unicode.graphemeIterator("hello");
     try testing.expect(iter.next() != null);
+}
+
+test "Unicode property cache fast path" {
+    const testing = std.testing;
+
+    var cache = Unicode.PropertyCache.init();
+
+    const codepoints = [_]u32{ 'A', 0x200B, 0x1F600, 0x0627 };
+
+    for (codepoints) |cp| {
+        const from_cache = cache.get(cp);
+        const direct = Unicode.getProperties(cp);
+
+        try testing.expectEqual(from_cache.width, direct.width);
+        try testing.expect(from_cache.grapheme_break == direct.grapheme_break);
+        try testing.expect(from_cache.emoji == direct.emoji);
+    }
 }
 
 test "Emoji property detection" {

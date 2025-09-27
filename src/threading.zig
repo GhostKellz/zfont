@@ -414,13 +414,20 @@ pub const FontDiscovery = struct {
 
         if (std.mem.indexOf(u8, filename, "Mono") != null or
             std.mem.indexOf(u8, filename, "Code") != null or
-            std.mem.indexOf(u8, filename, "Console") != null) {
+            std.mem.indexOf(u8, filename, "Console") != null)
+        {
             discovered.is_monospace = true;
         }
 
         if (std.mem.indexOf(u8, filename, "Fira") != null or
             std.mem.indexOf(u8, filename, "Cascadia") != null or
-            std.mem.indexOf(u8, filename, "JetBrains") != null) {
+            std.mem.indexOf(u8, filename, "JetBrains") != null or
+            std.mem.indexOf(u8, filename, "Iosevka") != null or
+            std.mem.indexOf(u8, filename, "Victor") != null or
+            std.mem.indexOf(u8, filename, "Monaspace") != null or
+            std.mem.indexOf(u8, filename, "Recursive") != null or
+            std.mem.indexOf(u8, filename, "Plex") != null)
+        {
             discovered.supports_ligatures = true;
         }
 

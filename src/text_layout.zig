@@ -1,7 +1,7 @@
 const std = @import("std");
 const root = @import("root.zig");
 const Font = @import("font.zig").Font;
-const Glyph = @import("glyph.zig").Glyph;
+const Unicode = @import("unicode.zig").Unicode;
 
 pub const TextLayout = struct {
     allocator: std.mem.Allocator,
@@ -69,15 +69,12 @@ pub const TextLayout = struct {
     }
 
     fn createTextRuns(self: *Self, text: []const u8, font: *Font, options: LayoutOptions) !void {
-        var utf8_view = std.unicode.Utf8View.init(text) catch {
-            return root.FontError.InvalidFontData;
-        };
-        var iterator = utf8_view.iterator();
-
         var current_run: ?*TextRun = null;
         var current_script = @import("font.zig").Script.unknown;
 
-        while (iterator.nextCodepoint()) |codepoint| {
+        var iterator = Unicode.codePointIterator(text);
+        while (iterator.next()) |cp| {
+            const codepoint: u32 = cp.code;
             const script = detectScript(codepoint);
 
             // Start new run if script changes
@@ -102,53 +99,77 @@ pub const TextLayout = struct {
 
     fn shapeRun(self: *Self, run: *TextRun, options: LayoutOptions) !void {
         var x_offset: f32 = 0;
+        var last_visible_codepoint: ?u32 = null;
+        var property_cache = Unicode.PropertyCache.init();
+        var grapheme_state = Unicode.GraphemeBreakState{};
+        var current_cluster: u32 = 0;
 
         for (run.codepoints.items, 0..) |codepoint, i| {
-            const glyph = try run.font.getGlyph(codepoint, run.size);
-
-            // Apply kerning with previous glyph
             if (i > 0) {
-                const prev_codepoint = run.codepoints.items[i - 1];
-                x_offset += run.font.getKerning(prev_codepoint, codepoint, run.size);
+                const prev = run.codepoints.items[i - 1];
+                if (Unicode.isGraphemeBoundary(prev, codepoint, &grapheme_state)) {
+                    current_cluster = @intCast(i);
+                }
+            }
+
+            const props = property_cache.get(codepoint);
+
+            if (props.is_control) {
+                continue;
+            }
+
+            if (options.enable_kerning) {
+                if (last_visible_codepoint) |prev| {
+                    if (props.width != .zero) {
+                        x_offset += run.font.getKerning(prev, codepoint, run.size);
+                    }
+                }
+            }
+
+            const glyph = run.font.getGlyph(codepoint, run.size) catch |err| {
+                if (err == root.FontError.GlyphNotFound and props.width == .zero) {
+                    continue;
+                }
+                return err;
+            };
+
+            var x_advance = glyph.advance_width;
+            if (props.width == .zero) {
+                x_advance = 0;
             }
 
             const shaped_glyph = ShapedGlyph{
-                .glyph_index = codepoint, // Simplified
+                .glyph_index = glyph.index,
                 .codepoint = codepoint,
                 .x_offset = x_offset,
                 .y_offset = 0,
-                .x_advance = glyph.advance_width,
+                .x_advance = x_advance,
                 .y_advance = glyph.advance_height,
-                .cluster = @as(u32, @intCast(i)),
+                .cluster = current_cluster,
             };
 
             try run.glyphs.append(shaped_glyph);
-            x_offset += shaped_glyph.x_advance;
+
+            if (props.width != .zero) {
+                x_offset += x_advance;
+                last_visible_codepoint = codepoint;
+            }
         }
 
-        // Apply RTL reversal if needed
         if (run.direction == .rtl) {
             std.mem.reverse(ShapedGlyph, run.glyphs.items);
         }
 
-        // Apply advanced shaping for complex scripts
         if (options.enable_complex_shaping) {
             try self.applyComplexShaping(run);
         }
     }
 
     fn applyComplexShaping(self: *Self, run: *TextRun) !void {
-        // Simplified complex shaping
-        // In a full implementation, this would handle:
-        // - Ligature substitution
-        // - Mark positioning
-        // - Contextual alternates
-        // - etc.
-
         switch (run.script) {
             .arabic => try self.applyArabicShaping(run),
             .devanagari => try self.applyIndicShaping(run),
-            else => {}, // No complex shaping needed
+            else => {},
         }
     }
 
@@ -322,22 +343,23 @@ pub const TextDirection = enum {
 };
 
 fn detectScript(codepoint: u32) @import("font.zig").Script {
-    return switch (codepoint) {
-        0x0000...0x007F => .latin, // Basic Latin
-        0x0080...0x00FF => .latin, // Latin-1 Supplement
-        0x0100...0x017F => .latin, // Latin Extended-A
-        0x0180...0x024F => .latin, // Latin Extended-B
-        0x0400...0x04FF => .cyrillic, // Cyrillic
-        0x0370...0x03FF => .greek, // Greek
-        0x0600...0x06FF => .arabic, // Arabic
-        0x0590...0x05FF => .hebrew, // Hebrew
-        0x0900...0x097F => .devanagari, // Devanagari
-        0x4E00...0x9FFF => .chinese, // CJK Unified Ideographs
-        0x3040...0x309F => .japanese, // Hiragana
-        0x30A0...0x30FF => .japanese, // Katakana
-        0xAC00...0xD7AF => .korean, // Hangul Syllables
-        0x1F600...0x1F64F => .emoji, // Emoticons
-        0x1F300...0x1F5FF => .emoji, // Misc Symbols and Pictographs
+    if (Unicode.getEmojiProperty(codepoint) != .None) {
+        return .emoji;
+    }
+
+    const script_prop = Unicode.getScriptProperty(codepoint);
+
+    return switch (script_prop) {
+        .Latin => .latin,
+        .Greek => .greek,
+        .Cyrillic => .cyrillic,
+        .Hebrew => .hebrew,
+        .Arabic => .arabic,
+        .Devanagari => .devanagari,
+        .Han => .chinese,
+        .Hiragana, .Katakana => .japanese,
+        .Hangul => .korean,
+        .Common, .Inherited => .symbols,
         else => .unknown,
     };
 }

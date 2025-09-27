@@ -1,5 +1,6 @@
 const std = @import("std");
 const root = @import("root.zig");
+const Unicode = @import("unicode.zig").Unicode;
 
 // Terminal-specific optimizations for maximum performance
 // Tailored for GhostShell and other high-performance terminals
@@ -172,29 +173,9 @@ pub const TerminalMeasurement = struct {
         return width;
     }
 
-    pub fn measureUnicode(allocator: std.mem.Allocator, text: []const u8) !f32 {
-        _ = allocator;
-        var width: f32 = 0;
-        var i: usize = 0;
-
-        while (i < text.len) {
-            const char_len = std.unicode.utf8ByteSequenceLength(text[i]) catch 1;
-            if (i + char_len <= text.len) {
-                const codepoint = std.unicode.utf8Decode(text[i..i + char_len]) catch {
-                    i += 1;
-                    continue;
-                };
-
-                // Use gcode Unicode properties for width
-                const unicode_props = @import("unicode.zig").Unicode.getProperties(codepoint);
-                width += unicode_props.width.toFloat();
-                i += char_len;
-            } else {
-                i += 1;
-            }
-        }
-
-        return width;
+    pub fn measureUnicode(text: []const u8, mode: Unicode.EastAsianWidthMode) f32 {
+        const columns = Unicode.stringWidthWithMode(text, mode);
+        return @as(f32, @floatFromInt(columns));
     }
 };
 

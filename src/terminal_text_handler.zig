@@ -2,6 +2,7 @@ const std = @import("std");
 const root = @import("root.zig");
 const gcode_integration = @import("gcode_integration.zig");
 const gcode_shaper = @import("gcode_shaper.zig");
+const Unicode = @import("unicode.zig").Unicode;
 
 // Terminal-optimized text handling using gcode intelligence
 // Handles cursor positioning, text selection, and complex text in terminals
@@ -15,6 +16,7 @@ pub const TerminalTextHandler = struct {
     cell_height: f32,
     columns: u32,
     rows: u32,
+    east_asian_mode: Unicode.EastAsianWidthMode,
 
     // Text selection state
     selection: ?TextSelection = null,
@@ -28,10 +30,10 @@ pub const TerminalTextHandler = struct {
     };
 
     const CursorPosition = struct {
-        logical: usize,  // Logical position in text
-        visual: usize,   // Visual position for display
-        column: u32,     // Terminal column
-        row: u32,        // Terminal row
+        logical: usize, // Logical position in text
+        visual: usize, // Visual position for display
+        column: u32, // Terminal column
+        row: u32, // Terminal row
     };
 
     pub fn init(allocator: std.mem.Allocator, cell_width: f32, cell_height: f32, columns: u32, rows: u32) !Self {
@@ -43,12 +45,17 @@ pub const TerminalTextHandler = struct {
             .cell_height = cell_height,
             .columns = columns,
             .rows = rows,
+            .east_asian_mode = .standard,
         };
     }
 
     pub fn deinit(self: *Self) void {
         self.gcode_processor.deinit();
         self.text_shaper.deinit();
+    }
+
+    pub fn setEastAsianWidthMode(self: *Self, mode: Unicode.EastAsianWidthMode) void {
+        self.east_asian_mode = mode;
     }
 
     // Advanced word boundary detection for terminal text selection
@@ -84,7 +91,7 @@ pub const TerminalTextHandler = struct {
         // Process word boundaries for intelligent wrapping
         for (analysis.word_boundaries) |boundary| {
             const word_text = text[boundary.start..boundary.end];
-            const word_width = try self.calculateTextWidth(word_text, &analysis);
+            const word_width = self.calculateTextWidth(word_text);
 
             // Check if word fits on current line
             if (current_width + word_width > max_width and current_line.segments.items.len > 0) {
@@ -193,15 +200,13 @@ pub const TerminalTextHandler = struct {
         };
     }
 
-    fn calculateTextWidth(self: *Self, _: []const u8, analysis: *const gcode_integration.CompleteTextAnalysis) !f32 {
-        var total_width: f32 = 0;
+    fn calculateTextWidth(self: *Self, text: []const u8) f32 {
+        const columns = self.measureTextColumns(text);
+        return @as(f32, @floatFromInt(columns)) * self.cell_width;
+    }
 
-        // Use gcode's display width analysis
-        for (analysis.complex_analysis) |char_analysis| {
-            total_width += char_analysis.display_width * self.cell_width;
-        }
-
-        return total_width;
+    fn measureTextColumns(self: *Self, text: []const u8) usize {
+        return Unicode.stringWidthWithMode(text, self.east_asian_mode);
     }
 
     // Emoji sequence handling with proper terminal width
@@ -219,19 +224,13 @@ pub const TerminalTextHandler = struct {
                     .sequence = try self.allocator.dupe(u8, emoji_text),
                     .start = boundary.start,
                     .end = boundary.end,
-                    .terminal_width = self.calculateEmojiWidth(emoji_text),
+                    .terminal_width = @intCast(self.measureTextColumns(emoji_text)),
                     .grapheme_count = boundary.grapheme_count,
                 });
             }
         }
 
         return emoji_info.toOwnedSlice();
-    }
-
-    fn calculateEmojiWidth(_: *Self, _: []const u8) u32 {
-        // Most emoji take 2 terminal cells
-        // Complex sequences (flags, skin tones) might vary
-        return 2; // Simplified - would use gcode width analysis
     }
 
     // Text rendering pipeline for terminals
@@ -283,7 +282,7 @@ pub const TerminalTextHandler = struct {
                 .script = run.script_info.script,
                 .direction = run.script_info.writing_direction,
                 .needs_complex_shaping = run.script_info.requires_complex_shaping,
-                .char_width = self.estimateCharWidth(run.script_info.script),
+                .char_width = self.estimateRunWidth(run.text),
             });
         }
 
@@ -294,11 +293,9 @@ pub const TerminalTextHandler = struct {
         };
     }
 
-    fn estimateCharWidth(self: *Self, script: gcode_integration.ScriptType) f32 {
-        return switch (script) {
-            .han, .hiragana, .katakana => self.cell_width * 2.0, // CJK double-width
-            else => self.cell_width,
-        };
+    fn estimateRunWidth(self: *Self, text: []const u8) f32 {
+        const columns = self.measureTextColumns(text);
+        return @as(f32, @floatFromInt(columns)) * self.cell_width;
     }
 };
 

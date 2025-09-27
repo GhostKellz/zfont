@@ -1,24 +1,27 @@
 const std = @import("std");
 const root = @import("root.zig");
 const gcode = @import("gcode");
+const Unicode = @import("unicode.zig").Unicode;
+const GraphemeSegmenter = @import("grapheme_segmenter.zig").GraphemeSegmenter;
 
 // Terminal cursor positioning in complex text using gcode intelligence
 // Handles proper cursor movement in BiDi, CJK, Indic, Arabic, and emoji text
 pub const TerminalCursorProcessor = struct {
     allocator: std.mem.Allocator,
     bidi_processor: gcode.bidi.BiDi,
-    grapheme_segmenter: gcode.grapheme.GraphemeSegmenter,
+    grapheme_segmenter: GraphemeSegmenter,
     complex_analyzer: gcode.complex_script.ComplexScriptAnalyzer,
+    east_asian_mode: Unicode.EastAsianWidthMode,
 
     const Self = @This();
 
     pub const CursorPosition = struct {
-        logical_index: usize,    // Logical position in text buffer
-        visual_index: usize,     // Visual position for rendering
-        grapheme_index: usize,   // Grapheme cluster index
-        line: u32,               // Terminal line
-        column: u32,             // Terminal column
-        is_rtl_context: bool,    // Whether cursor is in RTL context
+        logical_index: usize, // Logical position in text buffer
+        visual_index: usize, // Visual position for rendering
+        grapheme_index: usize, // Grapheme cluster index
+        line: u32, // Terminal line
+        column: u32, // Terminal column
+        is_rtl_context: bool, // Whether cursor is in RTL context
         script_context: ScriptContext,
     };
 
@@ -46,8 +49,9 @@ pub const TerminalCursorProcessor = struct {
         return Self{
             .allocator = allocator,
             .bidi_processor = try gcode.bidi.BiDi.init(allocator),
-            .grapheme_segmenter = try gcode.grapheme.GraphemeSegmenter.init(allocator),
+            .grapheme_segmenter = GraphemeSegmenter.init(allocator),
             .complex_analyzer = try gcode.complex_script.ComplexScriptAnalyzer.init(allocator),
+            .east_asian_mode = .standard,
         };
     }
 
@@ -55,6 +59,10 @@ pub const TerminalCursorProcessor = struct {
         self.bidi_processor.deinit();
         self.grapheme_segmenter.deinit();
         self.complex_analyzer.deinit();
+    }
+
+    pub fn setEastAsianWidthMode(self: *Self, mode: Unicode.EastAsianWidthMode) void {
+        self.east_asian_mode = mode;
     }
 
     pub fn analyzeTextForCursor(self: *Self, text: []const u8, terminal_width: u32) !CursorTextAnalysis {
@@ -72,7 +80,7 @@ pub const TerminalCursorProcessor = struct {
         analysis.complex_analysis = try self.complex_analyzer.analyzeText(text);
 
         // 4. Terminal line wrapping analysis
-        analysis.line_breaks = try self.calculateLineBreaks(text, terminal_width, &analysis);
+        analysis.line_breaks = try self.calculateLineBreaks(text, terminal_width);
 
         // 5. Create logical-to-visual mapping
         analysis.logical_to_visual = try self.createLogicalToVisualMap(text, &analysis);
@@ -81,74 +89,37 @@ pub const TerminalCursorProcessor = struct {
         return analysis;
     }
 
-    fn calculateLineBreaks(self: *Self, text: []const u8, terminal_width: u32, analysis: *const CursorTextAnalysis) ![]usize {
+    fn calculateLineBreaks(self: *Self, text: []const u8, terminal_width: u32) ![]usize {
+        var line_starts = std.ArrayList(usize).init(self.allocator);
+        try line_starts.append(0);
 
-        var line_breaks = std.ArrayList(usize).init(self.allocator);
         var current_width: u32 = 0;
-        var byte_pos: usize = 0;
+        var iterator = Unicode.codePointIterator(text);
 
-        // Process character by character considering display width
-        while (byte_pos < text.len) {
-            const char_len = std.unicode.utf8ByteSequenceLength(text[byte_pos]) catch 1;
-            if (byte_pos + char_len > text.len) break;
+        while (iterator.next()) |cp| {
+            const codepoint = cp.code;
+            const char_width: u32 = @as(u32, Unicode.getDisplayWidth(codepoint, self.east_asian_mode));
 
-            const codepoint = std.unicode.utf8Decode(text[byte_pos..byte_pos + char_len]) catch {
-                byte_pos += 1;
-                continue;
-            };
-
-            // Calculate character display width
-            const char_width = self.getCharacterDisplayWidth(codepoint, analysis);
-
-            // Check for line wrap
-            if (current_width + char_width > terminal_width and current_width > 0) {
-                try line_breaks.append(byte_pos);
+            if (codepoint == '\n') {
+                const next_start = cp.offset + cp.len;
+                try line_starts.append(next_start);
                 current_width = 0;
+                continue;
             }
 
-            // Handle explicit line breaks
-            if (codepoint == '\n') {
-                try line_breaks.append(byte_pos + char_len);
-                current_width = 0;
+            if (terminal_width > 0 and current_width + char_width > terminal_width and current_width > 0) {
+                try line_starts.append(cp.offset);
+                current_width = char_width;
             } else {
                 current_width += char_width;
             }
-
-            byte_pos += char_len;
         }
 
-        return line_breaks.toOwnedSlice();
-    }
-
-    fn getCharacterDisplayWidth(self: *Self, codepoint: u32, analysis: *const CursorTextAnalysis) u32 {
-        _ = self;
-        _ = analysis;
-
-        // Determine character width for terminal display
-
-        // Control characters and combining marks have no width
-        if (codepoint < 0x20 or (codepoint >= 0x0300 and codepoint <= 0x036F)) {
-            return 0;
+        if (line_starts.items[line_starts.items.len - 1] != text.len) {
+            try line_starts.append(text.len);
         }
 
-        // CJK characters are typically fullwidth (2 cells)
-        if ((codepoint >= 0x4E00 and codepoint <= 0x9FFF) or    // CJK Unified Ideographs
-            (codepoint >= 0x3040 and codepoint <= 0x309F) or    // Hiragana
-            (codepoint >= 0x30A0 and codepoint <= 0x30FF) or    // Katakana
-            (codepoint >= 0xAC00 and codepoint <= 0xD7AF)) {    // Hangul
-            return 2;
-        }
-
-        // Most emoji are fullwidth
-        if ((codepoint >= 0x1F600 and codepoint <= 0x1F64F) or  // Emoticons
-            (codepoint >= 0x1F300 and codepoint <= 0x1F5FF) or  // Misc Symbols
-            (codepoint >= 0x1F680 and codepoint <= 0x1F6FF) or  // Transport
-            (codepoint >= 0x1F1E6 and codepoint <= 0x1F1FF)) {  // Regional Indicators
-            return 2;
-        }
-
-        // Default to single width
-        return 1;
+        return line_starts.toOwnedSlice();
     }
 
     fn createLogicalToVisualMap(self: *Self, text: []const u8, analysis: *const CursorTextAnalysis) ![]usize {
@@ -197,20 +168,18 @@ pub const TerminalCursorProcessor = struct {
         return switch (movement) {
             .left => try self.moveCursorLeft(current_pos, analysis, text),
             .right => try self.moveCursorRight(current_pos, analysis, text),
-            .up => try self.moveCursorUp(current_pos, analysis),
-            .down => try self.moveCursorDown(current_pos, analysis),
+            .up => try self.moveCursorUp(current_pos, analysis, text),
+            .down => try self.moveCursorDown(current_pos, analysis, text),
             .word_left => try self.moveCursorWordLeft(current_pos, analysis, text),
             .word_right => try self.moveCursorWordRight(current_pos, analysis, text),
-            .line_start => try self.moveCursorLineStart(current_pos, analysis),
-            .line_end => try self.moveCursorLineEnd(current_pos, analysis),
-            .grapheme_left => try self.moveCursorGraphemeLeft(current_pos, analysis),
-            .grapheme_right => try self.moveCursorGraphemeRight(current_pos, analysis),
+            .line_start => try self.moveCursorLineStart(current_pos, analysis, text),
+            .line_end => try self.moveCursorLineEnd(current_pos, analysis, text),
+            .grapheme_left => try self.moveCursorGraphemeLeft(current_pos, analysis, text),
+            .grapheme_right => try self.moveCursorGraphemeRight(current_pos, analysis, text),
         };
     }
 
     fn moveCursorLeft(self: *Self, current: CursorPosition, analysis: *const CursorTextAnalysis, text: []const u8) !CursorPosition {
-        _ = text;
-
         var new_pos = current;
 
         if (current.is_rtl_context) {
@@ -228,18 +197,15 @@ pub const TerminalCursorProcessor = struct {
             new_pos.logical_index = analysis.visual_to_logical[new_pos.visual_index];
         }
 
-        // Update terminal coordinates
-        try self.updateTerminalCoordinates(&new_pos, analysis);
-
-        // Update script context
+        try self.updateTerminalCoordinates(&new_pos, analysis, text);
+        new_pos.visual_index = self.resolveVisualIndex(analysis, new_pos.logical_index);
+        new_pos.grapheme_index = self.resolveGraphemeIndex(analysis, new_pos.logical_index);
         new_pos.script_context = try self.getScriptContext(new_pos.logical_index, analysis);
 
         return new_pos;
     }
 
     fn moveCursorRight(self: *Self, current: CursorPosition, analysis: *const CursorTextAnalysis, text: []const u8) !CursorPosition {
-        _ = text;
-
         var new_pos = current;
 
         if (current.is_rtl_context) {
@@ -257,42 +223,41 @@ pub const TerminalCursorProcessor = struct {
             new_pos.logical_index = analysis.visual_to_logical[new_pos.visual_index];
         }
 
-        // Update terminal coordinates
-        try self.updateTerminalCoordinates(&new_pos, analysis);
-
-        // Update script context
+        try self.updateTerminalCoordinates(&new_pos, analysis, text);
+        new_pos.visual_index = self.resolveVisualIndex(analysis, new_pos.logical_index);
+        new_pos.grapheme_index = self.resolveGraphemeIndex(analysis, new_pos.logical_index);
         new_pos.script_context = try self.getScriptContext(new_pos.logical_index, analysis);
 
         return new_pos;
     }
 
-    fn moveCursorGraphemeLeft(self: *Self, current: CursorPosition, analysis: *const CursorTextAnalysis) !CursorPosition {
+    fn moveCursorGraphemeLeft(self: *Self, current: CursorPosition, analysis: *const CursorTextAnalysis, text: []const u8) !CursorPosition {
         var new_pos = current;
 
         // Find previous grapheme boundary
         if (current.grapheme_index > 0) {
             new_pos.grapheme_index -= 1;
             new_pos.logical_index = analysis.grapheme_breaks[new_pos.grapheme_index];
-            new_pos.visual_index = analysis.logical_to_visual[new_pos.logical_index];
         }
 
-        try self.updateTerminalCoordinates(&new_pos, analysis);
+        try self.updateTerminalCoordinates(&new_pos, analysis, text);
+        new_pos.visual_index = self.resolveVisualIndex(analysis, new_pos.logical_index);
         new_pos.script_context = try self.getScriptContext(new_pos.logical_index, analysis);
 
         return new_pos;
     }
 
-    fn moveCursorGraphemeRight(self: *Self, current: CursorPosition, analysis: *const CursorTextAnalysis) !CursorPosition {
+    fn moveCursorGraphemeRight(self: *Self, current: CursorPosition, analysis: *const CursorTextAnalysis, text: []const u8) !CursorPosition {
         var new_pos = current;
 
         // Find next grapheme boundary
         if (current.grapheme_index + 1 < analysis.grapheme_breaks.len) {
             new_pos.grapheme_index += 1;
             new_pos.logical_index = analysis.grapheme_breaks[new_pos.grapheme_index];
-            new_pos.visual_index = analysis.logical_to_visual[new_pos.logical_index];
         }
 
-        try self.updateTerminalCoordinates(&new_pos, analysis);
+        try self.updateTerminalCoordinates(&new_pos, analysis, text);
+        new_pos.visual_index = self.resolveVisualIndex(analysis, new_pos.logical_index);
         new_pos.script_context = try self.getScriptContext(new_pos.logical_index, analysis);
 
         return new_pos;
@@ -314,8 +279,9 @@ pub const TerminalCursorProcessor = struct {
             }
         }
 
-        new_pos.visual_index = analysis.logical_to_visual[new_pos.logical_index];
-        try self.updateTerminalCoordinates(&new_pos, analysis);
+        try self.updateTerminalCoordinates(&new_pos, analysis, text);
+        new_pos.visual_index = self.resolveVisualIndex(analysis, new_pos.logical_index);
+        new_pos.grapheme_index = self.resolveGraphemeIndex(analysis, new_pos.logical_index);
         new_pos.script_context = try self.getScriptContext(new_pos.logical_index, analysis);
 
         return new_pos;
@@ -336,14 +302,15 @@ pub const TerminalCursorProcessor = struct {
             }
         }
 
-        new_pos.visual_index = analysis.logical_to_visual[new_pos.logical_index];
-        try self.updateTerminalCoordinates(&new_pos, analysis);
+        try self.updateTerminalCoordinates(&new_pos, analysis, text);
+        new_pos.visual_index = self.resolveVisualIndex(analysis, new_pos.logical_index);
+        new_pos.grapheme_index = self.resolveGraphemeIndex(analysis, new_pos.logical_index);
         new_pos.script_context = try self.getScriptContext(new_pos.logical_index, analysis);
 
         return new_pos;
     }
 
-    fn moveCursorUp(self: *Self, current: CursorPosition, analysis: *const CursorTextAnalysis) !CursorPosition {
+    fn moveCursorUp(self: *Self, current: CursorPosition, analysis: *const CursorTextAnalysis, text: []const u8) !CursorPosition {
         var new_pos = current;
 
         if (current.line > 0) {
@@ -351,13 +318,13 @@ pub const TerminalCursorProcessor = struct {
 
             // Find corresponding position on previous line
             const target_column = current.column;
-            new_pos = try self.findPositionAtColumnOnLine(new_pos.line, target_column, analysis);
+            new_pos = try self.findPositionAtColumnOnLine(new_pos.line, target_column, analysis, text);
         }
 
         return new_pos;
     }
 
-    fn moveCursorDown(self: *Self, current: CursorPosition, analysis: *const CursorTextAnalysis) !CursorPosition {
+    fn moveCursorDown(self: *Self, current: CursorPosition, analysis: *const CursorTextAnalysis, text: []const u8) !CursorPosition {
         var new_pos = current;
 
         // Estimate total lines (simplified)
@@ -368,97 +335,136 @@ pub const TerminalCursorProcessor = struct {
 
             // Find corresponding position on next line
             const target_column = current.column;
-            new_pos = try self.findPositionAtColumnOnLine(new_pos.line, target_column, analysis);
+            new_pos = try self.findPositionAtColumnOnLine(new_pos.line, target_column, analysis, text);
         }
 
         return new_pos;
     }
 
-    fn moveCursorLineStart(self: *Self, current: CursorPosition, analysis: *const CursorTextAnalysis) !CursorPosition {
-
+    fn moveCursorLineStart(self: *Self, current: CursorPosition, analysis: *const CursorTextAnalysis, text: []const u8) !CursorPosition {
         var new_pos = current;
+        const line_count = self.lineCount(analysis);
+        const target_line: usize = if (line_count == 0) 0 else @min(@as(usize, current.line), line_count - 1);
+
+        const bounds = self.getLineBounds(analysis, text, target_line);
+        new_pos.logical_index = bounds.start;
+        new_pos.line = @intCast(target_line);
         new_pos.column = 0;
-
-        // Find logical position at start of current line
-        if (current.line < analysis.line_breaks.len) {
-            new_pos.logical_index = analysis.line_breaks[current.line];
-        } else {
-            new_pos.logical_index = 0;
-        }
-
-        new_pos.visual_index = analysis.logical_to_visual[new_pos.logical_index];
+        new_pos.visual_index = self.resolveVisualIndex(analysis, new_pos.logical_index);
+        new_pos.grapheme_index = self.resolveGraphemeIndex(analysis, new_pos.logical_index);
         new_pos.script_context = try self.getScriptContext(new_pos.logical_index, analysis);
 
         return new_pos;
     }
 
-    fn moveCursorLineEnd(self: *Self, current: CursorPosition, analysis: *const CursorTextAnalysis) !CursorPosition {
-
+    fn moveCursorLineEnd(self: *Self, current: CursorPosition, analysis: *const CursorTextAnalysis, text: []const u8) !CursorPosition {
         var new_pos = current;
+        const line_count = self.lineCount(analysis);
+        const target_line: usize = if (line_count == 0) 0 else @min(@as(usize, current.line), line_count - 1);
 
-        // Find end of current line
-        if (current.line + 1 < analysis.line_breaks.len) {
-            new_pos.logical_index = analysis.line_breaks[current.line + 1] - 1;
-        } else {
-            new_pos.logical_index = analysis.logical_to_visual.len - 1;
+        const bounds = self.getLineBounds(analysis, text, target_line);
+        var line_end = bounds.end;
+        if (line_end > bounds.start and text[line_end - 1] == '\n') {
+            line_end -= 1;
         }
 
-        new_pos.visual_index = analysis.logical_to_visual[new_pos.logical_index];
-        try self.updateTerminalCoordinates(&new_pos, analysis);
+        new_pos.logical_index = line_end;
+        new_pos.line = @intCast(target_line);
+        try self.updateTerminalCoordinates(&new_pos, analysis, text);
+        new_pos.visual_index = self.resolveVisualIndex(analysis, new_pos.logical_index);
+        new_pos.grapheme_index = self.resolveGraphemeIndex(analysis, new_pos.logical_index);
         new_pos.script_context = try self.getScriptContext(new_pos.logical_index, analysis);
 
         return new_pos;
     }
 
-    fn findPositionAtColumnOnLine(self: *Self, line: u32, target_column: u32, analysis: *const CursorTextAnalysis) !CursorPosition {
+    fn findPositionAtColumnOnLine(self: *Self, line: u32, target_column: u32, analysis: *const CursorTextAnalysis, text: []const u8) !CursorPosition {
+        const line_count = self.lineCount(analysis);
+        const target_line: usize = if (line_count == 0) 0 else @min(@as(usize, line), line_count - 1);
+        const bounds = self.getLineBounds(analysis, text, target_line);
 
-        // Simplified implementation - find closest position to target column on specified line
-        var pos = CursorPosition{
-            .logical_index = 0,
-            .visual_index = 0,
-            .grapheme_index = 0,
-            .line = line,
-            .column = @min(target_column, 79), // Clamp to reasonable terminal width
+        var iterator = Unicode.codePointIterator(text[bounds.start..bounds.end]);
+        var logical_offset: usize = 0;
+        var column_width: u32 = 0;
+
+        while (iterator.next()) |cp| {
+            const width = @as(u32, Unicode.getDisplayWidth(cp.code, self.east_asian_mode));
+            if (column_width + width > target_column) break;
+            column_width += width;
+            logical_offset = cp.offset + cp.len;
+        }
+
+        const logical_index = bounds.start + logical_offset;
+
+        return CursorPosition{
+            .logical_index = logical_index,
+            .visual_index = self.resolveVisualIndex(analysis, logical_index),
+            .grapheme_index = self.resolveGraphemeIndex(analysis, logical_index),
+            .line = @intCast(target_line),
+            .column = column_width,
             .is_rtl_context = false,
-            .script_context = undefined,
+            .script_context = try self.getScriptContext(logical_index, analysis),
         };
-
-        // Find corresponding logical position (simplified)
-        if (line < analysis.line_breaks.len) {
-            pos.logical_index = analysis.line_breaks[line] + pos.column;
-        }
-
-        if (pos.logical_index < analysis.logical_to_visual.len) {
-            pos.visual_index = analysis.logical_to_visual[pos.logical_index];
-        }
-
-        pos.script_context = try self.getScriptContext(pos.logical_index, analysis);
-
-        return pos;
     }
 
-    fn updateTerminalCoordinates(_: *Self, pos: *CursorPosition, analysis: *const CursorTextAnalysis) !void {
-
-        // Calculate terminal line and column from logical position
-        var current_line: u32 = 0;
-        var current_column: u32 = 0;
-
-        for (analysis.line_breaks) |break_pos| {
-            if (pos.logical_index >= break_pos) {
-                current_line += 1;
-                current_column = 0;
-            } else {
-                current_column = @intCast(pos.logical_index - (if (current_line > 0) analysis.line_breaks[current_line - 1] else 0));
-                break;
-            }
+    fn updateTerminalCoordinates(self: *Self, pos: *CursorPosition, analysis: *const CursorTextAnalysis, text: []const u8) !void {
+        if (analysis.line_breaks.len == 0) {
+            pos.line = 0;
+            pos.column = 0;
+            return;
         }
 
-        pos.line = current_line;
-        pos.column = current_column;
+        var line_index: usize = 0;
+        while (line_index + 1 < analysis.line_breaks.len and pos.logical_index >= analysis.line_breaks[line_index + 1]) {
+            line_index += 1;
+        }
+
+        const bounds = self.getLineBounds(analysis, text, line_index);
+        const slice_end = @min(pos.logical_index, bounds.end);
+        const column = self.measureRangeWidth(text, bounds.start, slice_end);
+
+        pos.line = @intCast(line_index);
+        pos.column = column;
+    }
+
+    fn resolveVisualIndex(_: *Self, analysis: *const CursorTextAnalysis, logical_index: usize) usize {
+        if (analysis.logical_to_visual.len == 0) return 0;
+        const clamped = @min(logical_index, analysis.logical_to_visual.len - 1);
+        return analysis.logical_to_visual[clamped];
+    }
+
+    fn resolveGraphemeIndex(_: *Self, analysis: *const CursorTextAnalysis, logical_index: usize) usize {
+        if (analysis.grapheme_breaks.len == 0) return 0;
+        var i: usize = 0;
+        while (i < analysis.grapheme_breaks.len and analysis.grapheme_breaks[i] <= logical_index) : (i += 1) {}
+        return if (i == 0) 0 else i - 1;
+    }
+
+    fn lineCount(_: *Self, analysis: *const CursorTextAnalysis) usize {
+        return if (analysis.line_breaks.len == 0) 0 else analysis.line_breaks.len - 1;
+    }
+
+    fn getLineBounds(_: *Self, analysis: *const CursorTextAnalysis, text: []const u8, line: usize) struct { start: usize, end: usize } {
+        if (analysis.line_breaks.len == 0) {
+            return .{ .start = 0, .end = text.len };
+        }
+
+        const start = analysis.line_breaks[line];
+        const end = if (line + 1 < analysis.line_breaks.len) analysis.line_breaks[line + 1] else text.len;
+        return .{ .start = start, .end = end };
+    }
+
+    fn measureRangeWidth(self: *Self, text: []const u8, start: usize, end: usize) u32 {
+        if (start >= end) return 0;
+        var iterator = Unicode.codePointIterator(text[start..end]);
+        var width: u32 = 0;
+        while (iterator.next()) |cp| {
+            width += @as(u32, Unicode.getDisplayWidth(cp.code, self.east_asian_mode));
+        }
+        return width;
     }
 
     fn getScriptContext(_: *Self, logical_index: usize, analysis: *const CursorTextAnalysis) !ScriptContext {
-
         if (logical_index >= analysis.complex_analysis.len) {
             return ScriptContext{
                 .script_type = .latin,
@@ -481,10 +487,10 @@ pub const TerminalCursorProcessor = struct {
     // Test cursor movement in complex text
     pub fn testCursorMovement(self: *Self) !void {
         const test_texts = [_][]const u8{
-            "Hello مرحبا World",      // Mixed LTR/RTL
-            "こんにちは世界",           // Japanese
-            "👨‍👩‍👧‍👦 Family",          // Emoji sequences
-            "नमस्ते दुनिया",           // Devanagari
+            "Hello مرحبا World", // Mixed LTR/RTL
+            "こんにちは世界", // Japanese
+            "👨‍👩‍👧‍👦 Family", // Emoji sequences
+            "नमस्ते दुनिया", // Devanagari
         };
 
         for (test_texts) |text| {
@@ -508,9 +514,7 @@ pub const TerminalCursorProcessor = struct {
 
             for (movements) |movement| {
                 pos = try self.moveCursor(pos, movement, &analysis, text);
-                std.log.info("  After {}: logical={}, visual={}, line={}, col={}", .{
-                    @tagName(movement), pos.logical_index, pos.visual_index, pos.line, pos.column
-                });
+                std.log.info("  After {}: logical={}, visual={}, line={}, col={}", .{ @tagName(movement), pos.logical_index, pos.visual_index, pos.line, pos.column });
             }
         }
     }

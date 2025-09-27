@@ -58,6 +58,12 @@ pub const GPUCache = struct {
         // Initialize GPU texture atlas
         try cache.initializeAtlas();
 
+        if (cache.enable_nvidia_optimizations) {
+            cache.enableNVIDIAOptimizations() catch |err| {
+                std.log.warn("gpu-cache: failed to enable NVIDIA optimizations: {s}", .{@errorName(err)});
+            };
+        }
+
         return cache;
     }
 
@@ -90,7 +96,7 @@ pub const GPUCache = struct {
         defer std.heap.page_allocator.free(gpu_vendor);
 
         return std.mem.eql(u8, gpu_vendor, "nvidia") or
-               std.mem.indexOf(u8, std.mem.toLower(std.heap.page_allocator, gpu_vendor) catch "unknown", "nvidia") != null;
+            std.mem.indexOf(u8, std.mem.toLower(std.heap.page_allocator, gpu_vendor) catch "unknown", "nvidia") != null;
     }
 
     fn initializeAtlas(self: *Self) !void {

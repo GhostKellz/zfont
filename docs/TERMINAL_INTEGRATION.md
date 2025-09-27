@@ -24,6 +24,57 @@ var terminal_handler = try zfont.TerminalTextHandler.init(
 defer terminal_handler.deinit();
 ```
 
+#### East Asian width modes
+
+Terminals that render CJK or ambiguous-width glyphs can opt into ZFont's configurable East Asian width handling. The `DynamicConfig` file accepts an `east-asian-width-mode` key with either `standard` (default) or `wide` to control how ambiguous codepoints are measured. Apply the mode to the terminal helpers once you load your configuration:
+
+```zig
+const config = dynamic_config.getConfig();
+
+terminal_handler.setEastAsianWidthMode(config.east_asian_width_mode);
+cursor_processor.setEastAsianWidthMode(config.east_asian_width_mode);
+performance_optimizer.setEastAsianWidthMode(config.east_asian_width_mode);
+```
+
+All cursor movement, wrapping, and performance metrics now share the same width semantics, ensuring consistent behavior for East Asian double‑width text.
+
+#### Nerd Font and icon-ready setups
+
+Patch-merged fonts such as `MesloLGS NF`, `FiraCode Nerd Font`, and `JetBrainsMono Nerd Font` expose Powerline symbols and UI icons in the Private Use Area. ZFont attempts to locate these variants automatically:
+
+- `TerminalPerformanceOptimizer` and `TerminalTextHandler` inherit the programming font list from `programming_fonts.zig`, which now includes Nerd Font aliases.
+- `powerlevel10k.zig` prioritizes `MesloLGS NF` to emulate the default powerlevel10k prompt experience.
+
+To force a specific patched font in your terminal build:
+
+```zig
+const preferred_fonts = [_][]const u8{
+    "MesloLGS NF",
+    "JetBrainsMono Nerd Font",
+    "FiraCode Nerd Font",
+};
+
+try font_manager.registerPreferredFonts(&preferred_fonts);
+// The programming font manager and fallback chain will now prioritize these entries.
+```
+
+Fallback chains should still include an emoji font (e.g., `Noto Color Emoji`) to render color glyphs that Nerd Fonts leave untouched.
+
+#### Ligature handling
+
+Fonts such as Fira Code, JetBrains Mono, Iosevka, and Victor Mono ship with extensive programming ligatures. ZFont respects them automatically when `enable-ligatures = true` in your `dynamic_config` file (default setting). For tighter control:
+
+```zig
+const ligature_options = zfont.ProgrammingFontManager.LigatureOptions{
+    .enable_ligatures = config.enable_ligatures,
+    .font_specific_only = true,
+};
+
+const ligatured = try programming_font_manager.processLigatures(text, active_font, ligature_options);
+```
+
+Set `font_specific_only` to ensure substitutions only occur when the active font advertises the relevant glyphs, preventing visual gaps with non-ligature fonts.
+
 ### 2. Performance Optimizer
 
 Intelligent caching and optimization for terminal scrolling:

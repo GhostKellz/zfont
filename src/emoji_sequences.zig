@@ -1,12 +1,13 @@
 const std = @import("std");
 const root = @import("root.zig");
 const gcode = @import("gcode");
+const GraphemeSegmenter = @import("grapheme_segmenter.zig").GraphemeSegmenter;
 
 // Perfect emoji sequence handler using gcode analysis
 // Handles complex emoji sequences, ZWJ, flags, skin tones, etc.
 pub const EmojiSequenceProcessor = struct {
     allocator: std.mem.Allocator,
-    grapheme_segmenter: gcode.grapheme.GraphemeSegmenter,
+    grapheme_segmenter: GraphemeSegmenter,
     emoji_cache: EmojiCache,
 
     const Self = @This();
@@ -64,7 +65,7 @@ pub const EmojiSequenceProcessor = struct {
     pub fn init(allocator: std.mem.Allocator) !Self {
         var processor = Self{
             .allocator = allocator,
-            .grapheme_segmenter = try gcode.grapheme.GraphemeSegmenter.init(allocator),
+            .grapheme_segmenter = GraphemeSegmenter.init(allocator),
             .emoji_cache = EmojiCache.init(allocator),
         };
 
@@ -77,60 +78,49 @@ pub const EmojiSequenceProcessor = struct {
         self.emoji_cache.deinit();
     }
 
+    pub fn getSequenceInfo(self: *Self, codepoints: []const u32) !EmojiInfo {
+        const key = self.createSequenceKey(codepoints);
+
+        if (self.emoji_cache.get(key)) |info| {
+            return info;
+        }
+
+        const info = try self.dynamicEmojiAnalysis(codepoints);
+        try self.emoji_cache.put(key, info);
+        return info;
+    }
+
     fn loadEmojiData(self: *Self) !void {
         // Load common emoji sequences with their properties
-        const emoji_data = [_]struct {
-            codepoints: []const u32,
-            info: EmojiInfo
-        }{
+        const emoji_data = [_]struct { codepoints: []const u32, info: EmojiInfo }{
             // Simple emoji
             .{
                 .codepoints = &[_]u32{0x1F600}, // 😀
-                .info = .{
-                    .sequence_type = .simple, .display_width = 2.0, .terminal_cells = 2,
-                    .component_count = 1, .has_skin_tone = false, .has_zwj = false,
-                    .is_flag_sequence = false, .presentation_style = .emoji
-                }
+                .info = .{ .sequence_type = .simple, .display_width = 2.0, .terminal_cells = 2, .component_count = 1, .has_skin_tone = false, .has_zwj = false, .is_flag_sequence = false, .presentation_style = .emoji },
             },
 
             // Flag sequences (Regional Indicator + Regional Indicator)
             .{
-                .codepoints = &[_]u32{0x1F1FA, 0x1F1F8}, // 🇺🇸 US Flag
-                .info = .{
-                    .sequence_type = .flag, .display_width = 2.0, .terminal_cells = 2,
-                    .component_count = 2, .has_skin_tone = false, .has_zwj = false,
-                    .is_flag_sequence = true, .presentation_style = .emoji
-                }
+                .codepoints = &[_]u32{ 0x1F1FA, 0x1F1F8 }, // 🇺🇸 US Flag
+                .info = .{ .sequence_type = .flag, .display_width = 2.0, .terminal_cells = 2, .component_count = 2, .has_skin_tone = false, .has_zwj = false, .is_flag_sequence = true, .presentation_style = .emoji },
             },
 
             // ZWJ sequences (Family)
             .{
-                .codepoints = &[_]u32{0x1F468, 0x200D, 0x1F469, 0x200D, 0x1F467, 0x200D, 0x1F466}, // 👨‍👩‍👧‍👦
-                .info = .{
-                    .sequence_type = .zwj_sequence, .display_width = 2.0, .terminal_cells = 2,
-                    .component_count = 7, .has_skin_tone = false, .has_zwj = true,
-                    .is_flag_sequence = false, .presentation_style = .emoji
-                }
+                .codepoints = &[_]u32{ 0x1F468, 0x200D, 0x1F469, 0x200D, 0x1F467, 0x200D, 0x1F466 }, // 👨‍👩‍👧‍👦
+                .info = .{ .sequence_type = .zwj_sequence, .display_width = 2.0, .terminal_cells = 2, .component_count = 7, .has_skin_tone = false, .has_zwj = true, .is_flag_sequence = false, .presentation_style = .emoji },
             },
 
             // Skin tone sequences
             .{
-                .codepoints = &[_]u32{0x1F44D, 0x1F3FB}, // 👍🏻 Thumbs up (light skin)
-                .info = .{
-                    .sequence_type = .skin_tone_sequence, .display_width = 2.0, .terminal_cells = 2,
-                    .component_count = 2, .has_skin_tone = true, .has_zwj = false,
-                    .is_flag_sequence = false, .presentation_style = .emoji
-                }
+                .codepoints = &[_]u32{ 0x1F44D, 0x1F3FB }, // 👍🏻 Thumbs up (light skin)
+                .info = .{ .sequence_type = .skin_tone_sequence, .display_width = 2.0, .terminal_cells = 2, .component_count = 2, .has_skin_tone = true, .has_zwj = false, .is_flag_sequence = false, .presentation_style = .emoji },
             },
 
             // Keycap sequences
             .{
-                .codepoints = &[_]u32{0x0031, 0xFE0F, 0x20E3}, // 1️⃣
-                .info = .{
-                    .sequence_type = .keycap, .display_width = 2.0, .terminal_cells = 2,
-                    .component_count = 3, .has_skin_tone = false, .has_zwj = false,
-                    .is_flag_sequence = false, .presentation_style = .emoji
-                }
+                .codepoints = &[_]u32{ 0x0031, 0xFE0F, 0x20E3 }, // 1️⃣
+                .info = .{ .sequence_type = .keycap, .display_width = 2.0, .terminal_cells = 2, .component_count = 3, .has_skin_tone = false, .has_zwj = false, .is_flag_sequence = false, .presentation_style = .emoji },
             },
         };
 
@@ -156,7 +146,7 @@ pub const EmojiSequenceProcessor = struct {
 
     pub fn processEmojiSequences(self: *Self, text: []const u8) !EmojiSequenceResult {
         // Use gcode grapheme segmentation to properly identify emoji boundaries
-        const grapheme_breaks = try self.grapheme_segmenter.segmentText(text);
+        const grapheme_breaks = try self.grapheme_segmenter.segmentCodepointBreaks(text);
         defer self.allocator.free(grapheme_breaks);
 
         var result = EmojiSequenceResult.init(self.allocator);
@@ -169,7 +159,7 @@ pub const EmojiSequenceProcessor = struct {
         while (byte_pos < text.len) {
             const char_len = std.unicode.utf8ByteSequenceLength(text[byte_pos]) catch 1;
             if (byte_pos + char_len <= text.len) {
-                const codepoint = std.unicode.utf8Decode(text[byte_pos..byte_pos + char_len]) catch {
+                const codepoint = std.unicode.utf8Decode(text[byte_pos .. byte_pos + char_len]) catch {
                     byte_pos += 1;
                     continue;
                 };
@@ -203,7 +193,6 @@ pub const EmojiSequenceProcessor = struct {
     }
 
     fn containsEmoji(self: *Self, codepoints: []const u32) bool {
-
         for (codepoints) |cp| {
             if (self.isEmojiCodepoint(cp)) return true;
         }
@@ -218,15 +207,12 @@ pub const EmojiSequenceProcessor = struct {
         if (codepoint >= 0x1F300 and codepoint <= 0x1F5FF) return true; // Misc Symbols
         if (codepoint >= 0x1F680 and codepoint <= 0x1F6FF) return true; // Transport
         if (codepoint >= 0x1F1E6 and codepoint <= 0x1F1FF) return true; // Regional Indicators
-        if (codepoint >= 0x2600 and codepoint <= 0x26FF) return true;   // Misc Symbols
-        if (codepoint >= 0x2700 and codepoint <= 0x27BF) return true;   // Dingbats
+        if (codepoint >= 0x2600 and codepoint <= 0x26FF) return true; // Misc Symbols
+        if (codepoint >= 0x2700 and codepoint <= 0x27BF) return true; // Dingbats
 
         // Specific emoji codepoints
         switch (codepoint) {
-            0x203C, 0x2049, 0x2122, 0x2139, 0x2194...0x2199,
-            0x21A9, 0x21AA, 0x231A, 0x231B, 0x2328, 0x23CF,
-            0x23E9...0x23F3, 0x23F8...0x23FA, 0x24C2, 0x25AA,
-            0x25AB, 0x25B6, 0x25C0, 0x25FB...0x25FE => return true,
+            0x203C, 0x2049, 0x2122, 0x2139, 0x2194...0x2199, 0x21A9, 0x21AA, 0x231A, 0x231B, 0x2328, 0x23CF, 0x23E9...0x23F3, 0x23F8...0x23FA, 0x24C2, 0x25AA, 0x25AB, 0x25B6, 0x25C0, 0x25FB...0x25FE => return true,
             else => return false,
         }
     }
@@ -269,6 +255,9 @@ pub const EmojiSequenceProcessor = struct {
         var has_zwj = false;
         var has_skin_tone = false;
         var is_flag = false;
+        var has_tags = false;
+        var tag_count: u8 = 0;
+        var vs16 = false;
         var regional_indicator_count: u8 = 0;
 
         for (codepoints) |cp| {
@@ -279,9 +268,16 @@ pub const EmojiSequenceProcessor = struct {
                     regional_indicator_count += 1;
                     if (regional_indicator_count == 2) is_flag = true;
                 },
-                0xFE0F => {}, // Variation Selector-16 (emoji presentation)
+                0xFE0F => {
+                    vs16 = true;
+                    info.presentation_style = .emoji;
+                },
                 0xFE0E => info.presentation_style = .text, // Variation Selector-15 (text)
                 0x20E3 => info.sequence_type = .keycap, // Combining Enclosing Keycap
+                0xE0020...0xE007F => {
+                    has_tags = true;
+                    tag_count += 1;
+                },
                 else => {},
             }
         }
@@ -296,6 +292,29 @@ pub const EmojiSequenceProcessor = struct {
         } else if (has_skin_tone) {
             info.sequence_type = .skin_tone_sequence;
             info.has_skin_tone = true;
+        } else if (has_tags) {
+            info.sequence_type = .tag_sequence;
+        }
+
+        if (info.presentation_style == .text and !vs16) {
+            info.display_width = 1.0;
+            info.terminal_cells = 1;
+        }
+
+        if (has_tags and codepoints.len > 0 and codepoints[0] == 0x1F3F4) {
+            info.sequence_type = .tag_sequence;
+        }
+
+        info.component_count = 0;
+        for (codepoints) |cp| {
+            switch (cp) {
+                0x200D, 0xFE0E, 0xFE0F => continue,
+                0xE0020...0xE007F => continue,
+                else => info.component_count += 1,
+            }
+        }
+        if (info.component_count == 0) {
+            info.component_count = @intCast(codepoints.len);
         }
 
         return info;
@@ -369,7 +388,6 @@ pub const EmojiSequenceProcessor = struct {
 
     // Enhanced emoji rendering with proper fallback
     pub fn renderEmojiSequence(self: *Self, sequence: *const EmojiSequenceData, font_size: f32) !EmojiRenderInfo {
-
         var render_info = EmojiRenderInfo{
             .sequence = sequence,
             .render_as_single = false,
@@ -414,13 +432,13 @@ pub const EmojiSequenceProcessor = struct {
     // Test with complex emoji sequences
     pub fn testEmojiProcessing(self: *Self) !void {
         const test_texts = [_][]const u8{
-            "😀😍🤔",               // Simple emoji
-            "🇺🇸🇯🇵🇩🇪",           // Flag sequences
-            "👨‍👩‍👧‍👦",             // Family ZWJ sequence
-            "👍🏻👍🏿",              // Skin tone variants
-            "1️⃣2️⃣3️⃣",             // Keycap sequences
-            "👩‍💻👨‍🔬",             // Professional emoji
-            "🏴󠁧󠁢󠁳󠁣󠁴󠁿",           // Tag sequence (Scotland flag)
+            "😀😍🤔", // Simple emoji
+            "🇺🇸🇯🇵🇩🇪", // Flag sequences
+            "👨‍👩‍👧‍👦", // Family ZWJ sequence
+            "👍🏻👍🏿", // Skin tone variants
+            "1️⃣2️⃣3️⃣", // Keycap sequences
+            "👩‍💻👨‍🔬", // Professional emoji
+            "🏴󠁧󠁢󠁳󠁣󠁴󠁿", // Tag sequence (Scotland flag)
         };
 
         for (test_texts) |text| {
@@ -429,19 +447,10 @@ pub const EmojiSequenceProcessor = struct {
             var result = try self.processEmojiSequences(text);
             defer result.deinit();
 
-            std.log.info("Found {} emoji sequences, total width: {d:.1}, complex: {}", .{
-                result.total_emoji_count,
-                result.total_display_width,
-                result.has_complex_sequences
-            });
+            std.log.info("Found {} emoji sequences, total width: {d:.1}, complex: {}", .{ result.total_emoji_count, result.total_display_width, result.has_complex_sequences });
 
             for (result.sequences.items) |seq| {
-                std.log.info("  Sequence: {s} ({}) - {} components, type: {}", .{
-                    seq.text_representation,
-                    seq.codepoints.len,
-                    seq.info.component_count,
-                    @tagName(seq.info.sequence_type)
-                });
+                std.log.info("  Sequence: {s} ({}) - {} components, type: {}", .{ seq.text_representation, seq.codepoints.len, seq.info.component_count, @tagName(seq.info.sequence_type) });
             }
         }
     }
@@ -536,8 +545,25 @@ test "EmojiSequenceProcessor sequence analysis" {
     defer processor.deinit();
 
     // Test flag sequence detection
-    const flag_codepoints = [_]u32{0x1F1FA, 0x1F1F8}; // US flag
+    const flag_codepoints = [_]u32{ 0x1F1FA, 0x1F1F8 }; // US flag
     const flag_info = processor.dynamicEmojiAnalysis(&flag_codepoints) catch return;
     try testing.expect(flag_info.sequence_type == .flag);
     try testing.expect(flag_info.is_flag_sequence);
+
+    // Test ZWJ sequence detection
+    const zwj_sequence = [_]u32{ 0x1F468, 0x200D, 0x1F469, 0x200D, 0x1F467 };
+    const zwj_info = processor.dynamicEmojiAnalysis(&zwj_sequence) catch return;
+    try testing.expect(zwj_info.sequence_type == .zwj_sequence);
+    try testing.expect(zwj_info.has_zwj);
+
+    // Test skin tone detection
+    const skin_sequence = [_]u32{ 0x1F44D, 0x1F3FD };
+    const skin_info = processor.dynamicEmojiAnalysis(&skin_sequence) catch return;
+    try testing.expect(skin_info.sequence_type == .skin_tone_sequence);
+    try testing.expect(skin_info.has_skin_tone);
+
+    // Test keycap sequence detection
+    const keycap_sequence = [_]u32{ 0x0031, 0xFE0F, 0x20E3 };
+    const keycap_info = processor.dynamicEmojiAnalysis(&keycap_sequence) catch return;
+    try testing.expect(keycap_info.sequence_type == .keycap);
 }

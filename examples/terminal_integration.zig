@@ -15,13 +15,7 @@ pub fn main() !void {
     const terminal_cols = 80;
     const terminal_rows = 24;
 
-    var terminal_handler = try zfont.TerminalTextHandler.init(
-        allocator,
-        cell_width,
-        cell_height,
-        terminal_cols,
-        terminal_rows
-    );
+    var terminal_handler = try zfont.TerminalTextHandler.init(allocator, cell_width, cell_height, terminal_cols, terminal_rows);
     defer terminal_handler.deinit();
 
     // Initialize cursor processor
@@ -32,6 +26,12 @@ pub fn main() !void {
     const perf_settings = zfont.TerminalPerformanceOptimizer.OptimizationSettings{};
     var perf_optimizer = try zfont.TerminalPerformanceOptimizer.init(allocator, perf_settings);
     defer perf_optimizer.deinit();
+
+    // Configure East Asian width handling (load from config in real applications)
+    const width_mode = zfont.Unicode.EastAsianWidthMode.wide;
+    terminal_handler.setEastAsianWidthMode(width_mode);
+    cursor_processor.setEastAsianWidthMode(width_mode);
+    perf_optimizer.setEastAsianWidthMode(width_mode);
 
     // Test complex multilingual text
     const complex_text =
@@ -56,25 +56,15 @@ pub fn main() !void {
     // 1. Text Analysis and Optimization
     std.log.info("=== Text Analysis ===", .{});
 
-    var optimized = try perf_optimizer.optimizeTextForScrolling(
-        complex_text, 0, complex_text.len, terminal_cols, cell_height
-    );
+    var optimized = try perf_optimizer.optimizeTextForScrolling(complex_text, 0, complex_text.len, terminal_cols, cell_height);
     defer optimized.deinit();
 
     std.log.info("Optimization level: {s}", .{@tagName(optimized.optimization_level)});
     std.log.info("Total lines: {}", .{optimized.total_lines});
 
     for (optimized.line_segments, 0..) |segment, i| {
-        std.log.info("Line {}: \"{s}\" ({})", .{
-            i + 1,
-            segment.text,
-            @tagName(segment.complexity_level)
-        });
-        std.log.info("  Width: {d:.1}, BiDi: {}, Shaping: {}", .{
-            segment.display_width,
-            segment.needs_bidi,
-            segment.needs_shaping
-        });
+        std.log.info("Line {}: \"{s}\" ({})", .{ i + 1, segment.text, @tagName(segment.complexity_level) });
+        std.log.info("  Width: {d:.1}, BiDi: {}, Shaping: {}", .{ segment.display_width, segment.needs_bidi, segment.needs_shaping });
     }
 
     // 2. Cursor Movement Demo
@@ -95,12 +85,7 @@ pub fn main() !void {
         .script_context = try cursor_processor.getScriptContext(0, &cursor_analysis),
     };
 
-    std.log.info("Initial cursor: logical={}, visual={}, line={}, col={}", .{
-        cursor_pos.logical_index,
-        cursor_pos.visual_index,
-        cursor_pos.line,
-        cursor_pos.column
-    });
+    std.log.info("Initial cursor: logical={}, visual={}, line={}, col={}", .{ cursor_pos.logical_index, cursor_pos.visual_index, cursor_pos.line, cursor_pos.column });
 
     // Test various cursor movements
     const movements = [_]struct {
@@ -116,9 +101,7 @@ pub fn main() !void {
     };
 
     for (movements) |movement| {
-        cursor_pos = try cursor_processor.moveCursor(
-            cursor_pos, movement.move, &cursor_analysis, cursor_test_text
-        );
+        cursor_pos = try cursor_processor.moveCursor(cursor_pos, movement.move, &cursor_analysis, cursor_test_text);
 
         std.log.info("{s}: logical={}, visual={}, line={}, col={}, RTL={}", .{
             movement.description,
@@ -138,28 +121,18 @@ pub fn main() !void {
     // Simulate double-click at position of Arabic word
     const click_position = 15; // Approximate position of "مرحبا"
 
-    var selection = try terminal_handler.selectWord(selection_text, click_position);
+    const selection = try terminal_handler.selectWord(selection_text, click_position);
 
     std.log.info("Selected word at position {}:", .{click_position});
-    std.log.info("  Start: logical={}, visual={}, line={}, col={}", .{
-        selection.start.logical,
-        selection.start.visual,
-        selection.start.column,
-        selection.start.row
-    });
-    std.log.info("  End: logical={}, visual={}, line={}, col={}", .{
-        selection.end.logical,
-        selection.end.visual,
-        selection.end.column,
-        selection.end.row
-    });
+    std.log.info("  Start: logical={}, visual={}, line={}, col={}", .{ selection.start.logical, selection.start.visual, selection.start.column, selection.start.row });
+    std.log.info("  End: logical={}, visual={}, line={}, col={}", .{ selection.end.logical, selection.end.visual, selection.end.column, selection.end.row });
 
     // 4. Emoji Handling in Terminal
     std.log.info("\n=== Emoji Terminal Handling ===", .{});
 
     const emoji_text = "Team: 👨‍💻👩‍🔬👨‍🍳 Flags: 🇺🇸🇯🇵🇩🇪 Family: 👨‍👩‍👧‍👦";
 
-    var emoji_info = try terminal_handler.handleEmojiSequences(emoji_text);
+    const emoji_info = try terminal_handler.handleEmojiSequences(emoji_text);
     defer {
         for (emoji_info) |*info| {
             allocator.free(info.sequence);
@@ -169,11 +142,7 @@ pub fn main() !void {
 
     std.log.info("Found {} emoji sequences:", .{emoji_info.len});
     for (emoji_info) |info| {
-        std.log.info("  Emoji: {s} (width: {} cells, {} graphemes)", .{
-            info.sequence,
-            info.terminal_width,
-            info.grapheme_count
-        });
+        std.log.info("  Emoji: {s} (width: {} cells, {} graphemes)", .{ info.sequence, info.terminal_width, info.grapheme_count });
     }
 
     // 5. Text Wrapping Demo
@@ -181,7 +150,7 @@ pub fn main() !void {
 
     const wrap_text = "This is a long line with mixed content: العربية中文हिंदी that needs to be wrapped properly across terminal width boundaries.";
 
-    var wrapped = try terminal_handler.wrapTextToTerminal(wrap_text);
+    const wrapped = try terminal_handler.wrapTextToTerminal(wrap_text);
     defer {
         for (wrapped) |*line| {
             line.deinit();
@@ -200,11 +169,7 @@ pub fn main() !void {
             total_width += segment.width;
         }
 
-        std.log.info("  Line {}: \"{s}\" (width: {d:.1})", .{
-            i + 1,
-            line_text.items,
-            total_width
-        });
+        std.log.info("  Line {}: \"{s}\" (width: {d:.1})", .{ i + 1, line_text.items, total_width });
     }
 
     // 6. Performance Metrics
@@ -220,7 +185,7 @@ pub fn main() !void {
 
     const render_text = "Final demo: مرحبا 🌍 Hello こんにちは";
 
-    var render_result = try terminal_handler.renderTextForTerminal(render_text);
+    const render_result = try terminal_handler.renderTextForTerminal(render_text);
 
     std.log.info("Rendering complete:", .{});
     std.log.info("  Requires BiDi: {}", .{render_result.requires_bidi});

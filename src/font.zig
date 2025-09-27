@@ -2,6 +2,7 @@ const std = @import("std");
 const root = @import("root.zig");
 const FontParser = @import("font_parser.zig").FontParser;
 const Glyph = @import("glyph.zig").Glyph;
+const Unicode = @import("unicode.zig").Unicode;
 
 pub const Font = struct {
     allocator: std.mem.Allocator,
@@ -112,17 +113,24 @@ pub const Font = struct {
         };
         var iterator = utf8_view.iterator();
 
-        var prev_codepoint: ?u32 = null;
+        var prev_visible_codepoint: ?u32 = null;
+        var property_cache = Unicode.PropertyCache.init();
 
         while (iterator.nextCodepoint()) |codepoint| {
-            // Add kerning if we have a previous character
-            if (prev_codepoint) |prev| {
-                width += self.getKerning(prev, codepoint, size);
+            const props = property_cache.get(codepoint);
+
+            if (props.is_control) {
+                continue;
             }
 
-            // Add character advance width
-            width += self.getAdvanceWidth(codepoint, size) catch 0;
-            prev_codepoint = codepoint;
+            if (props.width != .zero) {
+                if (prev_visible_codepoint) |prev| {
+                    width += self.getKerning(prev, codepoint, size);
+                }
+
+                width += self.getAdvanceWidth(codepoint, size) catch 0;
+                prev_visible_codepoint = codepoint;
+            }
         }
 
         return TextMeasurement{
