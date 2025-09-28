@@ -33,8 +33,8 @@
     // internet connectivity.
     .dependencies = .{
         .gcode = .{
-            .url = "https://github.com/GhostKellz/gcode/archive/refs/heads/main.tar.gz",
-            .hash = "gcode-0.0.0-AWO1Llr0DQCKosBe2zIxKt4LJKBXTtgZuimOqbU65IJm",
+            .url = "https://github.com/ghostkellz/gcode/archive/refs/heads/main.tar.gz",
+            .hash = "gcode-0.1.0-AWO1LsMKDwDmRZJBAvEZSO_lEbpzF0Yi4V2yCkTRdJVD",
         },
     },
     .paths = .{
