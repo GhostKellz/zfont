@@ -13,13 +13,16 @@ pub const FontManager = struct {
     const Self = @This();
 
     pub fn init(allocator: std.mem.Allocator) Self {
-        return Self{
+        var manager = Self{
             .allocator = allocator,
-            .font_cache = std.StringHashMap(*Font){},
-            .system_font_paths = std.ArrayList([]const u8){},
-            .fallback_fonts = std.ArrayList(*Font){},
+            .font_cache = std.StringHashMap(*Font).init(allocator),
+            .system_font_paths = undefined,
+            .fallback_fonts = undefined,
             .system_fonts_scanned = false,
         };
+        manager.system_font_paths = std.ArrayList([]const u8){};
+        manager.fallback_fonts = std.ArrayList(*Font){};
+        return manager;
     }
 
     pub fn deinit(self: *Self) void {
@@ -35,14 +38,14 @@ pub const FontManager = struct {
         for (self.system_font_paths.items) |path| {
             self.allocator.free(path);
         }
-        self.system_font_paths.deinit();
+        self.system_font_paths.deinit(self.allocator);
 
         // Free fallback fonts
         for (self.fallback_fonts.items) |font| {
             font.deinit();
             self.allocator.destroy(font);
         }
-        self.fallback_fonts.deinit();
+        self.fallback_fonts.deinit(self.allocator);
     }
 
     pub fn scanSystemFonts(self: *Self) !void {

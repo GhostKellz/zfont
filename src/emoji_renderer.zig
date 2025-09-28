@@ -18,6 +18,10 @@ pub const EmojiRenderer = struct {
     grapheme_state: Unicode.GraphemeBreakState,
     sequence_processor: EmojiSequenceProcessor,
 
+    // Unicode 15.1 emoji support
+    unicode_version: UnicodeVersion,
+    supported_categories: std.AutoHashMap(u32, EmojiCategory),
+
     const Self = @This();
 
     const ColorGlyph = struct {
@@ -66,23 +70,49 @@ pub const EmojiRenderer = struct {
         advance: f32,
     };
 
+    const UnicodeVersion = struct {
+        major: u8,
+        minor: u8,
+        patch: u8,
+
+        pub const UNICODE_15_1 = UnicodeVersion{ .major = 15, .minor = 1, .patch = 0 };
+    };
+
+    const EmojiCategory = enum {
+        smileys_and_emotion,
+        people_and_body,
+        animals_and_nature,
+        food_and_drink,
+        travel_and_places,
+        activities,
+        objects,
+        symbols,
+        flags,
+        // Unicode 15.1 new categories
+        new_in_15_1,
+    };
+
     pub fn init(allocator: std.mem.Allocator) !Self {
         var renderer = Self{
             .allocator = allocator,
-            .emoji_fonts = std.ArrayList(*Font){},
-            .color_cache = std.AutoHashMap(u32, ColorGlyph){},
-            .fallback_chain = std.ArrayList(*Font){},
-            .sequence_cache = std.AutoHashMap(u64, ColorGlyph){},
+            .emoji_fonts = undefined,
+            .color_cache = std.AutoHashMap(u32, ColorGlyph).init(allocator),
+            .fallback_chain = undefined,
+            .sequence_cache = std.AutoHashMap(u64, ColorGlyph).init(allocator),
             .grapheme_state = Unicode.GraphemeBreakState{},
             .sequence_processor = undefined,
+            .unicode_version = UnicodeVersion.UNICODE_15_1,
+            .supported_categories = std.AutoHashMap(u32, EmojiCategory).init(allocator),
         };
 
+        renderer.emoji_fonts = std.ArrayList(*Font){};
+        renderer.fallback_chain = std.ArrayList(*Font){};
         renderer.sequence_processor = try EmojiSequenceProcessor.init(allocator);
         return renderer;
     }
 
     pub fn deinit(self: *Self) void {
-        self.emoji_fonts.deinit();
+        self.emoji_fonts.deinit(self.allocator);
 
         var cache_iterator = self.color_cache.iterator();
         while (cache_iterator.next()) |entry| {
@@ -96,8 +126,9 @@ pub const EmojiRenderer = struct {
         }
         self.sequence_cache.deinit();
 
-        self.fallback_chain.deinit();
+        self.fallback_chain.deinit(self.allocator);
         self.sequence_processor.deinit();
+        self.supported_categories.deinit();
     }
 
     fn appendUniqueFont(list: *std.ArrayList(*Font), font: *Font) !void {
