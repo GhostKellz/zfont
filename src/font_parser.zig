@@ -151,7 +151,7 @@ pub const FontParser = struct {
             return root.FontError.InvalidFontData;
         }
 
-        return std.mem.readInt(u16, self.data[head_table.offset + 18..head_table.offset + 20], .big);
+        return std.mem.readInt(u16, self.data[head_table.offset + 18 ..][0..2], .big);
     }
 
     pub fn getMetrics(self: *Self) !root.Metrics {
@@ -163,9 +163,9 @@ pub const FontParser = struct {
             return root.FontError.InvalidFontData;
         }
 
-        const ascent = std.mem.readInt(i16, self.data[hhea_table.offset + 4..hhea_table.offset + 6], .big);
-        const descent = std.mem.readInt(i16, self.data[hhea_table.offset + 6..hhea_table.offset + 8], .big);
-        const line_gap = std.mem.readInt(i16, self.data[hhea_table.offset + 8..hhea_table.offset + 10], .big);
+        const ascent = std.mem.readInt(i16, self.data[hhea_table.offset + 4 ..][0..2], .big);
+        const descent = std.mem.readInt(i16, self.data[hhea_table.offset + 6 ..][0..2], .big);
+        const line_gap = std.mem.readInt(i16, self.data[hhea_table.offset + 8 ..][0..2], .big);
 
         return root.Metrics{
             .ascent = @floatFromInt(ascent),
@@ -187,8 +187,8 @@ pub const FontParser = struct {
             return 0;
         }
 
-        const version = std.mem.readInt(u16, self.data[cmap_offset..cmap_offset + 2], .big);
-        const num_subtables = std.mem.readInt(u16, self.data[cmap_offset + 2..cmap_offset + 4], .big);
+        const version = std.mem.readInt(u16, self.data[cmap_offset..][0..2], .big);
+        const num_subtables = std.mem.readInt(u16, self.data[cmap_offset + 2 ..][0..2], .big);
 
         _ = version;
 
@@ -197,9 +197,9 @@ pub const FontParser = struct {
         for (0..num_subtables) |_| {
             if (subtable_offset + 8 > self.data.len) break;
 
-            const platform_id = std.mem.readInt(u16, self.data[subtable_offset..subtable_offset + 2], .big);
-            const encoding_id = std.mem.readInt(u16, self.data[subtable_offset + 2..subtable_offset + 4], .big);
-            const offset = std.mem.readInt(u32, self.data[subtable_offset + 4..subtable_offset + 8], .big);
+            const platform_id = std.mem.readInt(u16, self.data[subtable_offset..][0..2], .big);
+            const encoding_id = std.mem.readInt(u16, self.data[subtable_offset + 2 ..][0..2], .big);
+            const offset = std.mem.readInt(u32, self.data[subtable_offset + 4 ..][0..4], .big);
 
             if (platform_id == 3 and (encoding_id == 1 or encoding_id == 10)) {
                 return self.lookupGlyphInSubtable(cmap_offset + offset, codepoint);
@@ -214,7 +214,7 @@ pub const FontParser = struct {
     fn lookupGlyphInSubtable(self: *Self, subtable_offset: u32, codepoint: u32) u32 {
         if (subtable_offset + 2 > self.data.len) return 0;
 
-        const format = std.mem.readInt(u16, self.data[subtable_offset..subtable_offset + 2], .big);
+        const format = std.mem.readInt(u16, self.data[subtable_offset..][0..2], .big);
 
         // For now, only implement format 4 (most common)
         return switch (format) {

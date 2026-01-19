@@ -72,6 +72,9 @@ pub const VariableFontManager = struct {
 
     pub fn deinit(self: *Self) void {
         if (self.fvar_table) |*fvar| {
+            for (fvar.instances) |instance| {
+                self.allocator.free(instance.coordinates);
+            }
             self.allocator.free(fvar.axes);
             self.allocator.free(fvar.instances);
         }
@@ -162,7 +165,7 @@ pub const VariableFontManager = struct {
         if (self.avar_table) |avar| {
             if (avar.segments.get(tag)) |segments| {
                 // Find the appropriate segment and interpolate
-                for (segments) |segment, i| {
+                for (segments, 0..) |segment, i| {
                     if (value <= segment.from_coordinate) {
                         if (i == 0) return segment.to_coordinate;
 
@@ -201,7 +204,7 @@ pub const VariableFontManager = struct {
 
         if (font_data.len < 12) return null;
 
-        const num_tables = std.mem.readInt(u16, font_data[4..6], .big);
+        const num_tables = std.mem.readInt(u16, font_data[4..][0..2], .big);
         const table_directory = font_data[12..];
 
         var offset: usize = 0;
@@ -210,8 +213,8 @@ pub const VariableFontManager = struct {
 
             const table_tag = table_directory[offset..offset + 4];
             if (std.mem.eql(u8, table_tag, tag)) {
-                const table_offset = std.mem.readInt(u32, table_directory[offset + 8..offset + 12], .big);
-                const table_length = std.mem.readInt(u32, table_directory[offset + 12..offset + 16], .big);
+                const table_offset = std.mem.readInt(u32, table_directory[offset + 8 ..][0..4], .big);
+                const table_length = std.mem.readInt(u32, table_directory[offset + 12 ..][0..4], .big);
 
                 if (table_offset + table_length <= font_data.len) {
                     return font_data[table_offset..table_offset + table_length];
@@ -228,10 +231,10 @@ pub const VariableFontManager = struct {
     fn parseFvarTable(self: *Self, data: []const u8) !FvarTable {
         if (data.len < 16) return error.InvalidFvarTable;
 
-        const axis_count = std.mem.readInt(u16, data[8..10], .big);
-        const axis_size = std.mem.readInt(u16, data[10..12], .big);
-        const instance_count = std.mem.readInt(u16, data[12..14], .big);
-        const instance_size = std.mem.readInt(u16, data[14..16], .big);
+        const axis_count = std.mem.readInt(u16, data[8..][0..2], .big);
+        const axis_size = std.mem.readInt(u16, data[10..][0..2], .big);
+        const instance_count = std.mem.readInt(u16, data[12..][0..2], .big);
+        const instance_size = std.mem.readInt(u16, data[14..][0..2], .big);
 
         // Parse axes
         var axes = try self.allocator.alloc(FvarTable.VariationAxis, axis_count);
@@ -241,12 +244,12 @@ pub const VariableFontManager = struct {
             if (offset + axis_size > data.len) return error.InvalidFvarTable;
 
             axes[i] = FvarTable.VariationAxis{
-                .tag = std.mem.readInt(u32, data[offset..offset + 4], .big),
-                .min_value = @bitCast(std.mem.readInt(u32, data[offset + 4..offset + 8], .big)),
-                .default_value = @bitCast(std.mem.readInt(u32, data[offset + 8..offset + 12], .big)),
-                .max_value = @bitCast(std.mem.readInt(u32, data[offset + 12..offset + 16], .big)),
-                .flags = std.mem.readInt(u16, data[offset + 16..offset + 18], .big),
-                .name_id = std.mem.readInt(u16, data[offset + 18..offset + 20], .big),
+                .tag = std.mem.readInt(u32, data[offset..][0..4], .big),
+                .min_value = @bitCast(std.mem.readInt(u32, data[offset + 4 ..][0..4], .big)),
+                .default_value = @bitCast(std.mem.readInt(u32, data[offset + 8 ..][0..4], .big)),
+                .max_value = @bitCast(std.mem.readInt(u32, data[offset + 12 ..][0..4], .big)),
+                .flags = std.mem.readInt(u16, data[offset + 16 ..][0..2], .big),
+                .name_id = std.mem.readInt(u16, data[offset + 18 ..][0..2], .big),
             };
 
             offset += axis_size;
@@ -259,8 +262,8 @@ pub const VariableFontManager = struct {
             if (offset + instance_size > data.len) return error.InvalidFvarTable;
 
             instances[i] = FvarTable.NamedInstance{
-                .subfamily_name_id = std.mem.readInt(u16, data[offset..offset + 2], .big),
-                .flags = std.mem.readInt(u16, data[offset + 2..offset + 4], .big),
+                .subfamily_name_id = std.mem.readInt(u16, data[offset..][0..2], .big),
+                .flags = std.mem.readInt(u16, data[offset + 2 ..][0..2], .big),
                 .coordinates = try self.allocator.alloc(f32, axis_count),
                 .postscript_name_id = null,
             };
@@ -268,7 +271,7 @@ pub const VariableFontManager = struct {
             // Read coordinates
             for (0..axis_count) |j| {
                 const coord_offset = offset + 4 + j * 4;
-                instances[i].coordinates[j] = @bitCast(std.mem.readInt(u32, data[coord_offset..coord_offset + 4], .big));
+                instances[i].coordinates[j] = @bitCast(std.mem.readInt(u32, data[coord_offset..][0..4], .big));
             }
 
             offset += instance_size;
@@ -284,7 +287,7 @@ pub const VariableFontManager = struct {
     fn parseAvarTable(self: *Self, data: []const u8) !AvarTable {
         if (data.len < 8) return error.InvalidAvarTable;
 
-        const axis_count = std.mem.readInt(u16, data[4..6], .big);
+        const axis_count = std.mem.readInt(u16, data[4..][0..2], .big);
         var segments = std.AutoHashMap(u32, []AvarTable.AxisValueMap).init(self.allocator);
 
         var offset: usize = 8;
@@ -294,7 +297,7 @@ pub const VariableFontManager = struct {
             for (0..axis_count) |i| {
                 if (i >= fvar.axes.len) break;
 
-                const segment_count = std.mem.readInt(u16, data[offset..offset + 2], .big);
+                const segment_count = std.mem.readInt(u16, data[offset..][0..2], .big);
                 offset += 2;
 
                 var axis_segments = try self.allocator.alloc(AvarTable.AxisValueMap, segment_count);
@@ -303,8 +306,8 @@ pub const VariableFontManager = struct {
                     if (offset + 4 > data.len) return error.InvalidAvarTable;
 
                     axis_segments[j] = AvarTable.AxisValueMap{
-                        .from_coordinate = @as(f32, @floatFromInt(std.mem.readInt(i16, data[offset..offset + 2], .big))) / 16384.0,
-                        .to_coordinate = @as(f32, @floatFromInt(std.mem.readInt(i16, data[offset + 2..offset + 4], .big))) / 16384.0,
+                        .from_coordinate = @as(f32, @floatFromInt(std.mem.readInt(i16, data[offset..][0..2], .big))) / 16384.0,
+                        .to_coordinate = @as(f32, @floatFromInt(std.mem.readInt(i16, data[offset + 2 ..][0..2], .big))) / 16384.0,
                     };
 
                     offset += 4;
@@ -323,7 +326,7 @@ pub const VariableFontManager = struct {
     fn interpolateFont(self: *Self, base_font: *Font) !Font {
         // This is a simplified implementation
         // In practice, this would involve complex glyph outline interpolation
-        var result_font = base_font.*;
+        const result_font = base_font.*;
 
         // Apply weight variations if present
         if (self.getAxisValue(0x77676874)) |weight| { // 'wght'
