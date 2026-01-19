@@ -7,3 +7,4 @@ TODO_MVP.md
 .zig-cache/
 archive/ 
 CODEX.md
+test-readint
