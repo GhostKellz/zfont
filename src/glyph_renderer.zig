@@ -142,8 +142,8 @@ pub const GlyphRenderer = struct {
         const y2 = @as(i32, @intFromFloat(p2.y));
 
         // Bresenham's line algorithm
-        const dx = @abs(x2 - x1);
-        const dy = @abs(y2 - y1);
+        const dx: i32 = @intCast(@abs(x2 - x1));
+        const dy: i32 = @intCast(@abs(y2 - y1));
         const sx: i32 = if (x1 < x2) 1 else -1;
         const sy: i32 = if (y1 < y2) 1 else -1;
         var err = dx - dy;

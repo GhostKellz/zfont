@@ -795,8 +795,8 @@ pub const PowerlineSymbolRenderer = struct {
         // Simple line drawing using Bresenham's algorithm
         var x = @as(i32, @intCast(x1));
         var y = @as(i32, @intCast(y1));
-        const dx = @abs(@as(i32, @intCast(x2)) - @as(i32, @intCast(x1)));
-        const dy = @abs(@as(i32, @intCast(y2)) - @as(i32, @intCast(y1)));
+        const dx: i32 = @intCast(@abs(@as(i32, @intCast(x2)) - @as(i32, @intCast(x1))));
+        const dy: i32 = @intCast(@abs(@as(i32, @intCast(y2)) - @as(i32, @intCast(y1))));
         const sx: i32 = if (x1 < x2) 1 else -1;
         const sy: i32 = if (y1 < y2) 1 else -1;
         var err = dx - dy;
