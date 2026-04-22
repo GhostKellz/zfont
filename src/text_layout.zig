@@ -15,8 +15,8 @@ pub const TextLayout = struct {
     pub fn init(allocator: std.mem.Allocator) Self {
         return Self{
             .allocator = allocator,
-            .runs = std.ArrayList(TextRun){},
-            .lines = std.ArrayList(Line){},
+            .runs = .empty,
+            .lines = .empty,
             .total_width = 0,
             .total_height = 0,
         };
@@ -289,7 +289,7 @@ const Line = struct {
 
     pub fn init() Line {
         return Line{
-            .glyphs = std.ArrayList(ShapedGlyph){},
+            .glyphs = .empty,
             .y_offset = 0,
         };
     }

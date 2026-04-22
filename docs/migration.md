@@ -524,9 +524,9 @@ After migration, teams typically see:
 
 ## Support & Resources
 
-- **Documentation**: `/docs/API.md`
+- **Documentation**: `/docs/api.md`
 - **Examples**: `/examples/`
-- **Performance**: `/docs/PERFORMANCE.md`
+- **Performance**: `/docs/performance.md`
 - **Issues**: GitHub Issues
 - **Discussions**: GitHub Discussions
 

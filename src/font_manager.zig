@@ -20,8 +20,8 @@ pub const FontManager = struct {
             .fallback_fonts = undefined,
             .system_fonts_scanned = false,
         };
-        manager.system_font_paths = std.ArrayList([]const u8){};
-        manager.fallback_fonts = std.ArrayList(*Font){};
+        manager.system_font_paths = .empty;
+        manager.fallback_fonts = .empty;
         return manager;
     }
 

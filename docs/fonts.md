@@ -101,4 +101,4 @@ For fonts that only provide partial ligature coverage, toggle `LigatureOptions.f
 
 Whenever you bundle a font, include a copy of its license in your distribution (e.g., under `licenses/fonts/`). For end-user installed fonts, point to the vendors license page in your documentation instead of mirroring the EULA.
 
-> ✅ *Best practice*: Track third-party assets in `docs/FONTS.md` (this file) and mirror the summary in your release notes so compliance reviews stay simple.
+> ✅ *Best practice*: Track third-party assets in `docs/fonts.md` (this file) and mirror the summary in your release notes so compliance reviews stay simple.

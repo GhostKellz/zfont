@@ -348,7 +348,7 @@ pub const ShapingResult = struct {
 
     pub fn init(allocator: std.mem.Allocator) ShapingResult {
         return ShapingResult{
-            .glyphs = std.ArrayList(ShapedGlyph){},
+            .glyphs = .empty,
             .allocator = allocator,
         };
     }

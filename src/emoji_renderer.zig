@@ -105,8 +105,8 @@ pub const EmojiRenderer = struct {
             .supported_categories = std.AutoHashMap(u32, EmojiCategory).init(allocator),
         };
 
-        renderer.emoji_fonts = std.ArrayList(*Font){};
-        renderer.fallback_chain = std.ArrayList(*Font){};
+        renderer.emoji_fonts = .empty;
+        renderer.fallback_chain = .empty;
         renderer.sequence_processor = try EmojiSequenceProcessor.init(allocator);
         return renderer;
     }

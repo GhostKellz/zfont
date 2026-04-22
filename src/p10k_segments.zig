@@ -4,6 +4,14 @@ const PowerlineSymbolRenderer = @import("powerline_symbols.zig").PowerlineSymbol
 const CellRenderer = @import("cell_renderer.zig").CellRenderer;
 const FontFeatureManager = @import("font_features.zig").FontFeatureManager;
 
+/// Get current time in nanoseconds using linux clock_gettime
+fn nanoTimestamp() i128 {
+    var ts: std.os.linux.timespec = undefined;
+    const rc = std.os.linux.clock_gettime(.MONOTONIC, &ts);
+    if (rc != 0) return 0;
+    return @as(i128, ts.sec) * std.time.ns_per_s + ts.nsec;
+}
+
 // PowerLevel10k segment rendering with custom glyph optimization
 // Handles the rendering of P10k prompt segments with advanced optimizations
 pub const P10kSegmentRenderer = struct {
@@ -391,9 +399,9 @@ pub const P10kSegmentRenderer = struct {
         x: f32,
         y: f32,
     ) !f32 {
-        const start_time = std.time.nanoTimestamp();
+        const start_time = nanoTimestamp();
         defer {
-            const end_time = std.time.nanoTimestamp();
+            const end_time = nanoTimestamp();
             self.stats.total_render_time_ns += @intCast(end_time - start_time);
         }
 

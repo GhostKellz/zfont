@@ -2,6 +2,14 @@ const std = @import("std");
 const root = @import("root.zig");
 const Unicode = @import("unicode.zig").Unicode;
 
+/// Get current time in nanoseconds using linux clock_gettime
+fn nanoTimestamp() i128 {
+    var ts: std.os.linux.timespec = undefined;
+    const rc = std.os.linux.clock_gettime(.MONOTONIC, &ts);
+    if (rc != 0) return 0;
+    return @as(i128, ts.sec) * std.time.ns_per_s + ts.nsec;
+}
+
 // Terminal-specific optimizations for maximum performance
 // Tailored for GhostShell and other high-performance terminals
 pub const TerminalOptimizer = struct {
@@ -86,9 +94,9 @@ pub const TerminalOptimizer = struct {
 
     // Fast ASCII rendering path
     pub fn renderASCII(self: *Self, chars: []const u8, x: u32, y: u32, buffer: []u8) !void {
-        const start_time = std.time.nanoTimestamp();
+        const start_time = nanoTimestamp();
         defer {
-            const end_time = std.time.nanoTimestamp();
+            const end_time = nanoTimestamp();
             _ = self.render_time.fetchAdd(@intCast(end_time - start_time), .monotonic);
         }
 

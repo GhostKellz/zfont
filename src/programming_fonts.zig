@@ -40,7 +40,7 @@ pub const ProgrammingFontManager = struct {
             .allocator = allocator,
             .ligature_map = std.StringHashMap(LigatureInfo).init(allocator),
             .nerd_font_map = std.AutoHashMap(u32, NerdFontIcon).init(allocator),
-            .programming_fonts = std.ArrayList(*Font){},
+            .programming_fonts = .empty,
         };
 
         manager.initializeLigatures() catch {};
@@ -468,8 +468,8 @@ pub const LigatureResult = struct {
 
     pub fn init(allocator: std.mem.Allocator) LigatureResult {
         return LigatureResult{
-            .ligatures = std.ArrayList(LigatureMatch){},
-            .characters = std.ArrayList(u8){},
+            .ligatures = .empty,
+            .characters = .empty,
             .allocator = allocator,
         };
     }

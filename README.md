@@ -3,10 +3,11 @@
 
   # ZFont
 
-  [![Zig 0.16.0-dev](https://img.shields.io/badge/Zig-0.16.0--dev-F7A41D?style=flat&logo=zig)](https://ziglang.org)
-  [![Nerd Fonts](https://img.shields.io/badge/Nerd_Fonts-Supported-00D4FF?style=flat&logo=nerdfonts)](https://www.nerdfonts.com)
-  [![Fira Code](https://img.shields.io/badge/Fira_Code-Supported-4B32C3?style=flat&logo=firacode)](https://github.com/tonsky/FiraCode)
-  [![Unicode](https://img.shields.io/badge/Unicode-Full_Support-5B2C87?style=flat&logo=unicode)](https://unicode.org)
+  <img src="https://img.shields.io/badge/Zig-0.17.0--dev-F7A41D?style=for-the-badge&logo=zig&logoColor=white" alt="Zig">
+  <img src="https://img.shields.io/badge/Built_with-Zig-F7A41D?style=for-the-badge&logo=zig&logoColor=white" alt="Built with Zig">
+  <img src="https://img.shields.io/badge/Nerd_Fonts-Supported-00D4FF?style=for-the-badge&logo=nerdfonts&logoColor=white" alt="Nerd Fonts">
+  <img src="https://img.shields.io/badge/Fira_Code-Supported-4B32C3?style=for-the-badge&logo=firacode&logoColor=white" alt="Fira Code">
+  <img src="https://img.shields.io/badge/Unicode-Full_Support-5B2C87?style=for-the-badge&logo=unicode&logoColor=white" alt="Unicode">
 
 ## DISCLAIMER
 

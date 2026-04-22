@@ -1,6 +1,14 @@
 const std = @import("std");
 const root = @import("root.zig");
 
+/// Get current time in nanoseconds using linux clock_gettime
+fn nanoTimestamp() i64 {
+    var ts: std.os.linux.timespec = undefined;
+    const rc = std.os.linux.clock_gettime(.MONOTONIC, &ts);
+    if (rc != 0) return 0;
+    return @as(i64, ts.sec) * std.time.ns_per_s + @as(i64, @intCast(ts.nsec));
+}
+
 // Font fallback chain system for comprehensive character coverage
 // Automatically selects appropriate fonts for different scripts and symbols
 pub const FontFallbackChain = struct {
@@ -162,7 +170,7 @@ pub const FontFallbackChain = struct {
     pub fn findFontForCodepoint(self: *Self, codepoint: u32) !*root.FontManager {
         // Check cache first
         if (self.glyph_cache.get(codepoint)) |cached| {
-            cached.last_used = std.time.nanoTimestamp();
+            cached.last_used = nanoTimestamp();
             if (cached.font_index == 0) {
                 return self.primary_font;
             } else {
@@ -175,7 +183,7 @@ pub const FontFallbackChain = struct {
             try self.glyph_cache.put(codepoint, CachedGlyph{
                 .font_index = 0,
                 .glyph_id = 0, // Will be filled when actually rendering
-                .last_used = std.time.nanoTimestamp(),
+                .last_used = nanoTimestamp(),
             });
             return self.primary_font;
         }
@@ -186,7 +194,7 @@ pub const FontFallbackChain = struct {
                 try self.glyph_cache.put(codepoint, CachedGlyph{
                     .font_index = i + 1,
                     .glyph_id = 0,
-                    .last_used = std.time.nanoTimestamp(),
+                    .last_used = nanoTimestamp(),
                 });
                 return font.font_manager;
             }
@@ -291,7 +299,7 @@ pub const FontFallbackChain = struct {
 
     // Clean old entries from glyph cache
     pub fn cleanupCache(self: *Self, max_age_ns: i64) void {
-        const current_time = std.time.nanoTimestamp();
+        const current_time = nanoTimestamp();
         var keys_to_remove = std.ArrayList(u32).init(self.allocator);
         defer keys_to_remove.deinit();
 
