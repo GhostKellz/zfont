@@ -293,7 +293,7 @@ test "FontParser basic operations" {
         0x00, 0x00, 0x00, 0x00, // checksum
         0x00, 0x00, 0x00, 0x1C, // offset
         0x00, 0x00, 0x00, 0x36, // length
-    } ++ [_]u8{0} ** 0x36; // head table data
+    } ++ @as([0x36]u8, @splat(0)); // head table data
 
     var parser = FontParser.init(allocator, &mock_data) catch {
         // Expected to fail with mock data

@@ -35,7 +35,7 @@ pub const TerminalOptimizer = struct {
     pub fn init(allocator: std.mem.Allocator, columns: u32, rows: u32, cell_width: u32, cell_height: u32) Self {
         return Self{
             .allocator = allocator,
-            .ascii_frequency = [_]u32{0} ** 128,
+            .ascii_frequency = @splat(0),
             .unicode_frequency = std.AutoHashMap(u32, u32).init(allocator),
             .cell_width = cell_width,
             .cell_height = cell_height,
@@ -200,7 +200,7 @@ pub const TerminalFontManager = struct {
         return Self{
             .base_manager = base_manager,
             .optimizer = TerminalOptimizer.init(allocator, columns, rows, cell_width, cell_height),
-            .ascii_cache = [_]?*root.Glyph{null} ** 128,
+            .ascii_cache = @splat(null),
             .frequent_unicode_cache = std.AutoHashMap(u32, *root.Glyph).init(allocator),
         };
     }

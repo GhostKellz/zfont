@@ -79,7 +79,7 @@ pub const WaylandRenderer = struct {
             .allocator = allocator,
             .cell_renderer = cell_renderer,
             .grid_aligner = grid_aligner,
-            .buffers = [_]WaylandBuffer{WaylandBuffer{}} ** 3,
+            .buffers = @splat(WaylandBuffer{}),
             .buffer_pool = std.ArrayList(WaylandBuffer).init(allocator),
             .dirty_regions = std.ArrayList(DirtyRegion).init(allocator),
         };

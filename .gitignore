@@ -10,3 +10,4 @@ archive/
 tasks/
 test-readint
 zig-pkg/
+tasks/

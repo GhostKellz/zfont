@@ -127,7 +127,7 @@ pub const AdvancedTextShaper = struct {
 
             pub fn init(components: []const u32) LigatureKey {
                 var key = LigatureKey{
-                    .components = [_]u32{0} ** 8,
+                    .components = @splat(0),
                     .count = @intCast(@min(components.len, 8)),
                 };
                 @memcpy(key.components[0..key.count], components[0..key.count]);
