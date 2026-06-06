@@ -167,8 +167,24 @@ pub const Unicode = struct {
     }
 
     pub fn getCharacterWidth(codepoint: u32) CharacterWidth {
+        if (isZeroWidthFormat(codepoint)) return .zero;
         const width = gcode.getWidth(@intCast(codepoint));
         return CharacterWidth.fromGcodeWidth(width);
+    }
+
+    /// Zero-width format/control code points that gcode's width table reports as
+    /// width 1. These have no advance and must render as zero columns.
+    fn isZeroWidthFormat(codepoint: u32) bool {
+        return switch (codepoint) {
+            0x200B, // ZERO WIDTH SPACE
+            0x200C, // ZERO WIDTH NON-JOINER
+            0x200D, // ZERO WIDTH JOINER
+            0x200E, // LEFT-TO-RIGHT MARK
+            0x200F, // RIGHT-TO-LEFT MARK
+            0xFEFF, // ZERO WIDTH NO-BREAK SPACE (BOM)
+            => true,
+            else => false,
+        };
     }
 
     pub fn isZeroWidth(codepoint: u32) bool {
@@ -198,6 +214,9 @@ pub const Unicode = struct {
             return gcode_emoji;
         }
 
+        // Skin tone modifiers (subset of the 0x1F300..0x1F5FF block, so check first)
+        if (codepoint >= 0x1F3FB and codepoint <= 0x1F3FF) return .Emoji_Modifier;
+
         // Fallback to manual range detection for cases gcode might miss
         if (codepoint >= 0x1F600 and codepoint <= 0x1F64F) return .Emoji_Presentation; // Emoticons
         if (codepoint >= 0x1F300 and codepoint <= 0x1F5FF) return .Emoji_Presentation; // Misc Symbols and Pictographs
@@ -208,9 +227,6 @@ pub const Unicode = struct {
         if (codepoint >= 0x1F900 and codepoint <= 0x1F9FF) return .Emoji_Presentation; // Supplemental Symbols
         if (codepoint >= 0x1FA00 and codepoint <= 0x1FA6F) return .Emoji_Presentation; // Chess Symbols
         if (codepoint >= 0x1FA70 and codepoint <= 0x1FAFF) return .Emoji_Presentation; // Extended-A
-
-        // Skin tone modifiers
-        if (codepoint >= 0x1F3FB and codepoint <= 0x1F3FF) return .Emoji_Modifier;
 
         // Regular emoji in other ranges
         if (codepoint >= 0x2600 and codepoint <= 0x26FF) return .Emoji; // Miscellaneous Symbols
@@ -258,6 +274,8 @@ pub const Unicode = struct {
     pub const GraphemeBreakState = gcode.GraphemeBreakState;
 
     pub fn isGraphemeBoundary(prev_cp: u32, curr_cp: u32, state: *GraphemeBreakState) bool {
+        // UAX #29 GB3: never break between CR and LF.
+        if (prev_cp == 0x0D and curr_cp == 0x0A) return false;
         return gcode.graphemeBreak(@intCast(prev_cp), @intCast(curr_cp), state);
     }
 
@@ -308,7 +326,7 @@ pub const Unicode = struct {
     }
     inline fn buildProperties(codepoint: u32, gcode_props: gcode.Properties) Properties {
         return Properties{
-            .width = CharacterWidth.fromGcodeWidth(gcode_props.width),
+            .width = if (isZeroWidthFormat(codepoint)) .zero else CharacterWidth.fromGcodeWidth(gcode_props.width),
             .grapheme_break = gcode_props.grapheme_boundary_class,
             .emoji = EmojiProperty.fromGraphemeClass(gcode_props.grapheme_boundary_class),
             .script = convertScript(gcode.getScript(@intCast(codepoint))),

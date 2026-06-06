@@ -121,15 +121,18 @@ pub fn build(b: *std.Build) void {
 
     // This allows the user to pass arguments to the application in the build
     // command itself, like this: `zig build run -- arg1 arg2 etc`
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
-    }
+    run_cmd.addPassthruArgs();
 
     // Creates an executable that will run `test` blocks from the provided module.
     // Here `mod` needs to define a target, which is why earlier we made sure to
     // set the releative field.
+    // The self-hosted x86_64 backend (default in Debug) miscompiles some
+    // by-value struct + optional-enum code paths in our dependencies on this
+    // Zig dev build, producing spurious GP faults. Force the LLVM backend for
+    // the test binaries until the self-hosted backend stabilizes.
     const mod_tests = b.addTest(.{
         .root_module = mod,
+        .use_llvm = true,
     });
 
     // A run step that will run the test executable.
@@ -140,6 +143,7 @@ pub fn build(b: *std.Build) void {
     // hence why we have to create two separate ones.
     const exe_tests = b.addTest(.{
         .root_module = exe.root_module,
+        .use_llvm = true,
     });
 
     // A run step that will run the second test executable.

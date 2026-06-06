@@ -10,18 +10,18 @@ pub const BiDiProcessor = struct {
 
     // BiDi character types
     pub const BiDiType = enum(u8) {
-        L = 0,   // Left-to-Right
-        R = 1,   // Right-to-Left
-        AL = 2,  // Right-to-Left Arabic
-        EN = 3,  // European Number
-        ES = 4,  // European Number Separator
-        ET = 5,  // European Number Terminator
-        AN = 6,  // Arabic Number
-        CS = 7,  // Common Number Separator
+        L = 0, // Left-to-Right
+        R = 1, // Right-to-Left
+        AL = 2, // Right-to-Left Arabic
+        EN = 3, // European Number
+        ES = 4, // European Number Separator
+        ET = 5, // European Number Terminator
+        AN = 6, // Arabic Number
+        CS = 7, // Common Number Separator
         NSM = 8, // Nonspacing Mark
-        BN = 9,  // Boundary Neutral
-        B = 10,  // Paragraph Separator
-        S = 11,  // Segment Separator
+        BN = 9, // Boundary Neutral
+        B = 10, // Paragraph Separator
+        S = 11, // Segment Separator
         WS = 12, // Whitespace
         ON = 13, // Other Neutrals
         LRE = 14, // Left-to-Right Embedding
@@ -63,16 +63,16 @@ pub const BiDiProcessor = struct {
 
         pub fn init(allocator: std.mem.Allocator) BiDiResult {
             return BiDiResult{
-                .chars = std.ArrayList(BiDiChar).init(allocator),
-                .runs = std.ArrayList(BiDiRun).init(allocator),
+                .chars = std.ArrayList(BiDiChar).empty,
+                .runs = std.ArrayList(BiDiRun).empty,
                 .base_direction = .ltr,
                 .allocator = allocator,
             };
         }
 
         pub fn deinit(self: *BiDiResult) void {
-            self.chars.deinit();
-            self.runs.deinit();
+            self.chars.deinit(self.allocator);
+            self.runs.deinit(self.allocator);
         }
     };
 
@@ -108,14 +108,14 @@ pub const BiDiProcessor = struct {
         while (i < text.len) {
             const char_len = std.unicode.utf8ByteSequenceLength(text[i]) catch 1;
             if (i + char_len <= text.len) {
-                const codepoint = std.unicode.utf8Decode(text[i..i + char_len]) catch {
+                const codepoint = std.unicode.utf8Decode(text[i .. i + char_len]) catch {
                     i += 1;
                     original_index += 1;
                     continue;
                 };
 
                 const bidi_type = getBiDiType(codepoint);
-                try result.chars.append(BiDiChar{
+                try result.chars.append(result.allocator, BiDiChar{
                     .codepoint = codepoint,
                     .bidi_type = bidi_type,
                     .level = 0, // Will be set later
@@ -221,7 +221,7 @@ pub const BiDiProcessor = struct {
         for (result.chars.items, 0..) |char, i| {
             if (char.level != current_level) {
                 // End current run and start new one
-                try result.runs.append(BiDiRun{
+                try result.runs.append(result.allocator, BiDiRun{
                     .start = run_start,
                     .length = i - run_start,
                     .level = current_level,
@@ -234,7 +234,7 @@ pub const BiDiProcessor = struct {
         }
 
         // Add final run
-        try result.runs.append(BiDiRun{
+        try result.runs.append(result.allocator, BiDiRun{
             .start = run_start,
             .length = result.chars.items.len - run_start,
             .level = current_level,
@@ -244,7 +244,7 @@ pub const BiDiProcessor = struct {
 
     // Reorder characters for display
     pub fn reorderForDisplay(self: *Self, result: *BiDiResult) ![]BiDiChar {
-        var display_order = std.ArrayList(BiDiChar).init(self.allocator);
+        var display_order = std.ArrayList(BiDiChar).empty;
 
         // Sort runs by level (higher levels first for proper nesting)
         const runs = try self.allocator.dupe(BiDiRun, result.runs.items);
@@ -254,24 +254,24 @@ pub const BiDiProcessor = struct {
 
         // Process each run
         for (runs) |run| {
-            const run_chars = result.chars.items[run.start..run.start + run.length];
+            const run_chars = result.chars.items[run.start .. run.start + run.length];
 
             if (run.direction == .rtl) {
                 // Reverse RTL runs
                 var i = run_chars.len;
                 while (i > 0) {
                     i -= 1;
-                    try display_order.append(run_chars[i]);
+                    try display_order.append(self.allocator, run_chars[i]);
                 }
             } else {
                 // LTR runs stay in order
                 for (run_chars) |char| {
-                    try display_order.append(char);
+                    try display_order.append(self.allocator, char);
                 }
             }
         }
 
-        return display_order.toOwnedSlice();
+        return display_order.toOwnedSlice(self.allocator);
     }
 
     fn runLevelCompare(context: void, a: BiDiRun, b: BiDiRun) bool {
@@ -284,7 +284,7 @@ pub const BiDiProcessor = struct {
 fn getBiDiType(codepoint: u32) BiDiProcessor.BiDiType {
     // ASCII Latin
     if ((codepoint >= 0x0041 and codepoint <= 0x005A) or // A-Z
-        (codepoint >= 0x0061 and codepoint <= 0x007A))   // a-z
+        (codepoint >= 0x0061 and codepoint <= 0x007A)) // a-z
     {
         return .L;
     }
@@ -354,11 +354,11 @@ pub const BiDiLayout = struct {
 
         // Convert BiDi runs to layout runs
         for (bidi_result.runs.items) |run| {
-            const run_chars = bidi_result.chars.items[run.start..run.start + run.length];
+            const run_chars = bidi_result.chars.items[run.start .. run.start + run.length];
 
             var layout_run = LayoutRun{
                 .direction = run.direction,
-                .chars = std.ArrayList(u32).init(self.allocator),
+                .chars = std.ArrayList(u32).empty,
             };
 
             if (run.direction == .rtl) {
@@ -366,16 +366,16 @@ pub const BiDiLayout = struct {
                 var i = run_chars.len;
                 while (i > 0) {
                     i -= 1;
-                    try layout_run.chars.append(run_chars[i].codepoint);
+                    try layout_run.chars.append(self.allocator, run_chars[i].codepoint);
                 }
             } else {
                 // LTR text stays in order
                 for (run_chars) |char| {
-                    try layout_run.chars.append(char.codepoint);
+                    try layout_run.chars.append(self.allocator, char.codepoint);
                 }
             }
 
-            try layout.runs.append(layout_run);
+            try layout.runs.append(self.allocator, layout_run);
         }
 
         return layout;
@@ -387,16 +387,16 @@ pub const BiDiLayout = struct {
 
         pub fn init(allocator: std.mem.Allocator) LayoutResult {
             return LayoutResult{
-                .runs = std.ArrayList(LayoutRun).init(allocator),
+                .runs = std.ArrayList(LayoutRun).empty,
                 .allocator = allocator,
             };
         }
 
         pub fn deinit(self: *LayoutResult) void {
             for (self.runs.items) |*run| {
-                run.chars.deinit();
+                run.chars.deinit(self.allocator);
             }
-            self.runs.deinit();
+            self.runs.deinit(self.allocator);
         }
     };
 

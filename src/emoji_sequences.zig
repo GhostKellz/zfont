@@ -34,7 +34,7 @@ pub const EmojiSequenceProcessor = struct {
         length: u8,
     };
 
-    const EmojiInfo = struct {
+    pub const EmojiInfo = struct {
         sequence_type: EmojiType,
         display_width: f32,
         terminal_cells: u8,
@@ -152,8 +152,8 @@ pub const EmojiSequenceProcessor = struct {
         var result = EmojiSequenceResult.init(self.allocator);
 
         // Convert text to codepoints
-        var codepoints = std.ArrayList(u32).init(self.allocator);
-        defer codepoints.deinit();
+        var codepoints = std.ArrayList(u32).empty;
+        defer codepoints.deinit(self.allocator);
 
         var byte_pos: usize = 0;
         while (byte_pos < text.len) {
@@ -163,7 +163,7 @@ pub const EmojiSequenceProcessor = struct {
                     byte_pos += 1;
                     continue;
                 };
-                try codepoints.append(codepoint);
+                try codepoints.append(self.allocator, codepoint);
                 byte_pos += char_len;
             } else {
                 break;
@@ -178,7 +178,7 @@ pub const EmojiSequenceProcessor = struct {
 
             if (self.containsEmoji(cluster_codepoints)) {
                 const emoji_sequence = try self.analyzeEmojiSequence(cluster_codepoints, cluster_start);
-                try result.sequences.append(emoji_sequence);
+                try result.sequences.append(self.allocator, emoji_sequence);
             }
 
             cluster_start = cluster_end;
@@ -321,15 +321,16 @@ pub const EmojiSequenceProcessor = struct {
     }
 
     fn codepointsToString(self: *Self, codepoints: []const u32) ![]u8 {
-        var result = std.ArrayList(u8).init(self.allocator);
+        var result = std.ArrayList(u8).empty;
 
         for (codepoints) |cp| {
             var utf8_bytes: [4]u8 = undefined;
-            const len = std.unicode.utf8Encode(cp, &utf8_bytes) catch continue;
-            try result.appendSlice(utf8_bytes[0..len]);
+            const cp21 = std.math.cast(u21, cp) orelse continue;
+            const len = std.unicode.utf8Encode(cp21, &utf8_bytes) catch continue;
+            try result.appendSlice(self.allocator, utf8_bytes[0..len]);
         }
 
-        return result.toOwnedSlice();
+        return result.toOwnedSlice(self.allocator);
     }
 
     fn calculateTotalEmojiWidth(self: *Self, sequences: []const EmojiSequenceData) f32 {
@@ -358,7 +359,7 @@ pub const EmojiSequenceProcessor = struct {
     pub fn optimizeForTerminal(self: *Self, sequences: []const EmojiSequenceData, terminal_width: u32) !EmojiTerminalLayout {
         var layout = EmojiTerminalLayout.init(self.allocator);
 
-        var current_line = std.ArrayList(EmojiSequenceData).init(self.allocator);
+        var current_line = std.ArrayList(EmojiSequenceData).empty;
         var current_line_width: u32 = 0;
 
         for (sequences) |seq| {
@@ -367,20 +368,20 @@ pub const EmojiSequenceProcessor = struct {
             // Check if emoji fits on current line
             if (current_line_width + seq_width > terminal_width and current_line.items.len > 0) {
                 // Move to next line
-                try layout.lines.append(try current_line.toOwnedSlice());
-                current_line = std.ArrayList(EmojiSequenceData).init(self.allocator);
+                try layout.lines.append(self.allocator, try current_line.toOwnedSlice(self.allocator));
+                current_line = std.ArrayList(EmojiSequenceData).empty;
                 current_line_width = 0;
             }
 
-            try current_line.append(seq);
+            try current_line.append(self.allocator, seq);
             current_line_width += seq_width;
         }
 
         // Add final line
         if (current_line.items.len > 0) {
-            try layout.lines.append(try current_line.toOwnedSlice());
+            try layout.lines.append(self.allocator, try current_line.toOwnedSlice(self.allocator));
         } else {
-            current_line.deinit();
+            current_line.deinit(self.allocator);
         }
 
         return layout;
@@ -391,7 +392,7 @@ pub const EmojiSequenceProcessor = struct {
         var render_info = EmojiRenderInfo{
             .sequence = sequence,
             .render_as_single = false,
-            .fallback_components = std.ArrayList(u32).init(self.allocator),
+            .fallback_components = std.ArrayList(u32).empty,
             .estimated_width = sequence.info.display_width * font_size,
             .estimated_height = font_size,
         };
@@ -407,7 +408,7 @@ pub const EmojiSequenceProcessor = struct {
                 // If that fails, fall back to components
                 for (sequence.codepoints) |cp| {
                     if (cp != 0x200D) { // Skip ZWJ characters in fallback
-                        try render_info.fallback_components.append(cp);
+                        try render_info.fallback_components.append(self.allocator, cp);
                     }
                 }
             },
@@ -418,7 +419,7 @@ pub const EmojiSequenceProcessor = struct {
                 render_info.render_as_single = true;
                 // Fallback: render base emoji without skin tone
                 if (sequence.codepoints.len > 0) {
-                    try render_info.fallback_components.append(sequence.codepoints[0]);
+                    try render_info.fallback_components.append(self.allocator, sequence.codepoints[0]);
                 }
             },
             else => {
@@ -450,7 +451,7 @@ pub const EmojiSequenceProcessor = struct {
             std.log.info("Found {} emoji sequences, total width: {d:.1}, complex: {}", .{ result.total_emoji_count, result.total_display_width, result.has_complex_sequences });
 
             for (result.sequences.items) |seq| {
-                std.log.info("  Sequence: {s} ({}) - {} components, type: {}", .{ seq.text_representation, seq.codepoints.len, seq.info.component_count, @tagName(seq.info.sequence_type) });
+                std.log.info("  Sequence: {s} ({}) - {} components, type: {s}", .{ seq.text_representation, seq.codepoints.len, seq.info.component_count, @tagName(seq.info.sequence_type) });
             }
         }
     }
@@ -477,7 +478,7 @@ pub const EmojiSequenceResult = struct {
 
     pub fn init(allocator: std.mem.Allocator) EmojiSequenceResult {
         return EmojiSequenceResult{
-            .sequences = std.ArrayList(EmojiSequenceData).init(allocator),
+            .sequences = std.ArrayList(EmojiSequenceData).empty,
             .total_emoji_count = 0,
             .total_display_width = 0.0,
             .has_complex_sequences = false,
@@ -489,7 +490,7 @@ pub const EmojiSequenceResult = struct {
         for (self.sequences.items) |*seq| {
             seq.deinit(self.allocator);
         }
-        self.sequences.deinit();
+        self.sequences.deinit(self.allocator);
     }
 };
 
@@ -499,7 +500,7 @@ pub const EmojiTerminalLayout = struct {
 
     pub fn init(allocator: std.mem.Allocator) EmojiTerminalLayout {
         return EmojiTerminalLayout{
-            .lines = std.ArrayList([]EmojiSequenceData).init(allocator),
+            .lines = std.ArrayList([]EmojiSequenceData).empty,
             .allocator = allocator,
         };
     }
@@ -508,7 +509,7 @@ pub const EmojiTerminalLayout = struct {
         for (self.lines.items) |line| {
             self.allocator.free(line);
         }
-        self.lines.deinit();
+        self.lines.deinit(self.allocator);
     }
 };
 
@@ -519,8 +520,8 @@ pub const EmojiRenderInfo = struct {
     estimated_width: f32,
     estimated_height: f32,
 
-    pub fn deinit(self: *EmojiRenderInfo) void {
-        self.fallback_components.deinit();
+    pub fn deinit(self: *EmojiRenderInfo, allocator: std.mem.Allocator) void {
+        self.fallback_components.deinit(allocator);
     }
 };
 

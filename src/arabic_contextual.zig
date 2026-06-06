@@ -5,7 +5,7 @@ const gcode = @import("gcode");
 // Enhanced Arabic contextual forms using real gcode analysis
 pub const ArabicContextualProcessor = struct {
     allocator: std.mem.Allocator,
-    complex_analyzer: gcode.complex_script.ComplexScriptAnalyzer,
+    complex_analyzer: gcode.ComplexScriptAnalyzer,
     contextual_forms_table: ContextualFormsTable,
 
     const Self = @This();
@@ -39,7 +39,7 @@ pub const ArabicContextualProcessor = struct {
     pub fn init(allocator: std.mem.Allocator) !Self {
         var processor = Self{
             .allocator = allocator,
-            .complex_analyzer = try gcode.complex_script.ComplexScriptAnalyzer.init(allocator),
+            .complex_analyzer = gcode.ComplexScriptAnalyzer.init(allocator),
             .contextual_forms_table = ContextualFormsTable.init(allocator),
         };
 
@@ -48,7 +48,6 @@ pub const ArabicContextualProcessor = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        self.complex_analyzer.deinit();
         self.contextual_forms_table.deinit();
     }
 
@@ -102,55 +101,59 @@ pub const ArabicContextualProcessor = struct {
     }
 
     pub fn processArabicText(self: *Self, text: []const u8) !ArabicProcessingResult {
-        // Use gcode to analyze the text
-        const analyses = try self.complex_analyzer.analyzeText(text);
-        defer self.allocator.free(analyses);
-
         var result = ArabicProcessingResult.init(self.allocator);
 
         // Convert text to codepoints for processing
-        var codepoints = std.ArrayList(u32).init(self.allocator);
-        defer codepoints.deinit();
+        var codepoints = std.ArrayList(u32).empty;
+        defer codepoints.deinit(self.allocator);
 
         var i: usize = 0;
         while (i < text.len) {
             const char_len = std.unicode.utf8ByteSequenceLength(text[i]) catch 1;
             if (i + char_len <= text.len) {
-                const codepoint = std.unicode.utf8Decode(text[i..i + char_len]) catch {
+                const codepoint = std.unicode.utf8Decode(text[i .. i + char_len]) catch {
                     i += 1;
                     continue;
                 };
-                try codepoints.append(codepoint);
+                try codepoints.append(self.allocator, codepoint);
                 i += char_len;
             } else {
                 break;
             }
         }
 
+        // Use gcode to analyze the decoded codepoints (analyzeText expects []const u32)
+        const analyses = try self.complex_analyzer.analyzeText(codepoints.items);
+        defer self.allocator.free(analyses);
+
         // Process each character with its context
         for (codepoints.items, 0..) |codepoint, pos| {
             if (pos < analyses.len and self.isArabicLetter(codepoint)) {
                 const analysis = analyses[pos];
 
-                // Determine contextual form using gcode analysis
-                const form = self.determineContextualForm(analyses, pos);
+                // Determine contextual form using gcode analysis,
+                // tracking codepoints from our own input array.
+                const form = self.determineContextualForm(analyses, codepoints.items, pos);
 
                 // Get the shaped glyph
                 const shaped_glyph = self.getContextualForm(codepoint, form);
 
-                try result.contextual_forms.append(ArabicContextualForm{
+                const joins_left = if (analysis.joining_type) |jt| jt.joinsLeft() else false;
+                const joins_right = if (analysis.joining_type) |jt| jt.joinsRight() else false;
+
+                try result.contextual_forms.append(self.allocator, ArabicContextualForm{
                     .base_codepoint = codepoint,
                     .contextual_codepoint = shaped_glyph,
                     .form = form,
                     .position = pos,
-                    .joins_left = analysis.joining_type == .dual_joining or analysis.joining_type == .left_joining,
-                    .joins_right = analysis.joining_type == .dual_joining or analysis.joining_type == .right_joining,
+                    .joins_left = joins_left,
+                    .joins_right = joins_right,
                 });
 
                 // Check for ligatures
                 if (pos + 1 < codepoints.items.len) {
                     if (self.checkForLigature(codepoint, codepoints.items[pos + 1])) |ligature| {
-                        try result.ligatures.append(ArabicLigature{
+                        try result.ligatures.append(self.allocator, ArabicLigature{
                             .components = &[_]u32{ codepoint, codepoints.items[pos + 1] },
                             .ligature_glyph = ligature,
                             .position = pos,
@@ -166,45 +169,54 @@ pub const ArabicContextualProcessor = struct {
     fn isArabicLetter(self: *Self, codepoint: u32) bool {
         _ = self;
         return (codepoint >= 0x0621 and codepoint <= 0x064A) or // Basic Arabic block
-               (codepoint >= 0x066E and codepoint <= 0x06D3) or // Extended Arabic
-               (codepoint >= 0x06FA and codepoint <= 0x06FF);   // More Arabic
+            (codepoint >= 0x066E and codepoint <= 0x06D3) or // Extended Arabic
+            (codepoint >= 0x06FA and codepoint <= 0x06FF); // More Arabic
     }
 
-    fn determineContextualForm(self: *Self, analyses: []gcode.complex_script.ComplexScriptAnalysis, pos: usize) ArabicForm {
+    fn determineContextualForm(
+        self: *Self,
+        analyses: []gcode.ComplexScriptAnalysis,
+        codepoints: []const u32,
+        pos: usize,
+    ) ArabicForm {
         _ = self;
         const current = analyses[pos];
 
-        // If non-joining, always isolated
-        if (current.joining_type == .none or current.joining_type == .transparent) {
+        // If non-joining or transparent, always isolated.
+        if (current.joining_type) |jt| {
+            if (jt == .U or jt.isTransparent()) {
+                return .isolated;
+            }
+        } else {
             return .isolated;
         }
 
-        // Check left context
+        // Check left context: the previous character must be able to join to
+        // its left (toward this character) and must not be a space.
         var has_left_joiner = false;
         if (pos > 0) {
             const prev = analyses[pos - 1];
-            has_left_joiner = (prev.joining_type == .dual_joining or
-                              prev.joining_type == .right_joining or
-                              prev.joining_type == .join_causing) and
-                              prev.codepoint != 0x0020; // Not space
+            if (prev.joining_type) |jt| {
+                has_left_joiner = jt.joinsLeft() and codepoints[pos - 1] != 0x0020;
+            }
         }
 
-        // Check right context
+        // Check right context: the next character must be able to join to its
+        // right (toward this character) and must not be a space.
         var has_right_joiner = false;
         if (pos + 1 < analyses.len) {
             const next = analyses[pos + 1];
-            has_right_joiner = (next.joining_type == .dual_joining or
-                               next.joining_type == .left_joining or
-                               next.joining_type == .join_causing) and
-                               next.codepoint != 0x0020; // Not space
+            if (next.joining_type) |jt| {
+                has_right_joiner = jt.joinsRight() and codepoints[pos + 1] != 0x0020;
+            }
         }
 
-        // Determine form based on context
+        // Determine form based on context.
         return switch (@as(u2, if (has_left_joiner) 1 else 0) | (@as(u2, if (has_right_joiner) 2 else 0))) {
             0 => .isolated, // No joiners
-            1 => .final,    // Left joiner only
-            2 => .initial,  // Right joiner only
-            3 => .medial,   // Both joiners
+            1 => .final, // Left joiner only
+            2 => .initial, // Right joiner only
+            3 => .medial, // Both joiners
         };
     }
 
@@ -234,10 +246,10 @@ pub const ArabicContextualProcessor = struct {
     pub fn testArabicProcessing(self: *Self) !void {
         // Test various Arabic texts
         const test_texts = [_][]const u8{
-            "بسم الله",           // "In the name of Allah"
-            "السلام عليكم",      // "Peace be upon you"
-            "مرحبا بالعالم",     // "Hello world"
-            "الكتاب المقدس",     // "The holy book"
+            "بسم الله", // "In the name of Allah"
+            "السلام عليكم", // "Peace be upon you"
+            "مرحبا بالعالم", // "Hello world"
+            "الكتاب المقدس", // "The holy book"
         };
 
         for (test_texts) |text| {
@@ -246,25 +258,14 @@ pub const ArabicContextualProcessor = struct {
             var result = try self.processArabicText(text);
             defer result.deinit();
 
-            std.log.info("Found {} contextual forms and {} ligatures", .{
-                result.contextual_forms.items.len,
-                result.ligatures.items.len
-            });
+            std.log.info("Found {} contextual forms and {} ligatures", .{ result.contextual_forms.items.len, result.ligatures.items.len });
 
             for (result.contextual_forms.items) |form| {
-                std.log.info("Char U+{X} -> U+{X} ({})", .{
-                    form.base_codepoint,
-                    form.contextual_codepoint,
-                    @tagName(form.form)
-                });
+                std.log.info("Char U+{X} -> U+{X} ({s})", .{ form.base_codepoint, form.contextual_codepoint, @tagName(form.form) });
             }
 
             for (result.ligatures.items) |ligature| {
-                std.log.info("Ligature: U+{X}+U+{X} -> U+{X}", .{
-                    ligature.components[0],
-                    ligature.components[1],
-                    ligature.ligature_glyph
-                });
+                std.log.info("Ligature: U+{X}+U+{X} -> U+{X}", .{ ligature.components[0], ligature.components[1], ligature.ligature_glyph });
             }
         }
     }
@@ -277,15 +278,15 @@ pub const ArabicProcessingResult = struct {
 
     pub fn init(allocator: std.mem.Allocator) ArabicProcessingResult {
         return ArabicProcessingResult{
-            .contextual_forms = std.ArrayList(ArabicContextualForm).init(allocator),
-            .ligatures = std.ArrayList(ArabicLigature).init(allocator),
+            .contextual_forms = std.ArrayList(ArabicContextualForm).empty,
+            .ligatures = std.ArrayList(ArabicLigature).empty,
             .allocator = allocator,
         };
     }
 
     pub fn deinit(self: *ArabicProcessingResult) void {
-        self.contextual_forms.deinit();
-        self.ligatures.deinit();
+        self.contextual_forms.deinit(self.allocator);
+        self.ligatures.deinit(self.allocator);
     }
 };
 

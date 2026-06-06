@@ -131,11 +131,11 @@ pub const EmojiRenderer = struct {
         self.supported_categories.deinit();
     }
 
-    fn appendUniqueFont(list: *std.ArrayList(*Font), font: *Font) !void {
+    fn appendUniqueFont(allocator: std.mem.Allocator, list: *std.ArrayList(*Font), font: *Font) !void {
         for (list.items) |existing| {
             if (existing == font) return;
         }
-        try list.append(font);
+        try list.append(allocator, font);
     }
 
     pub fn loadEmojiFonts(self: *Self, font_manager: *FontManager) !void {
@@ -157,22 +157,22 @@ pub const EmojiRenderer = struct {
 
         for (emoji_font_names) |font_name| {
             if (try font_manager.findFont(font_name, .{ .size = 24.0 })) |font| {
-                try appendUniqueFont(&self.emoji_fonts, font);
+                try appendUniqueFont(self.allocator, &self.emoji_fonts, font);
             }
         }
 
         if (self.emoji_fonts.items.len == 0) {
             if (try font_manager.getFallbackFont()) |fallback| {
-                try appendUniqueFont(&self.emoji_fonts, fallback);
+                try appendUniqueFont(self.allocator, &self.emoji_fonts, fallback);
             }
         }
 
         for (self.emoji_fonts.items) |font| {
-            try appendUniqueFont(&self.fallback_chain, font);
+            try appendUniqueFont(self.allocator, &self.fallback_chain, font);
         }
 
         if (try font_manager.getFallbackFont()) |fallback| {
-            try appendUniqueFont(&self.fallback_chain, fallback);
+            try appendUniqueFont(self.allocator, &self.fallback_chain, fallback);
         }
     }
 
@@ -183,14 +183,15 @@ pub const EmojiRenderer = struct {
 
         // Check cache first
         if (self.color_cache.get(codepoint)) |cached| {
-            return self.scaleColorGlyph(cached, size);
+            return try self.scaleColorGlyph(cached, size);
         }
 
         // Try to render with emoji fonts
         for (self.emoji_fonts.items) |font| {
             if (try self.renderEmojiWithFont(font, codepoint, size, options)) |glyph| {
                 try self.color_cache.put(codepoint, glyph);
-                return glyph;
+                // Cache owns `glyph`; hand the caller an independent clone.
+                return try self.scaleColorGlyph(glyph, size);
             }
         }
 
@@ -314,7 +315,8 @@ pub const EmojiRenderer = struct {
                     }
 
                     // Simple smile
-                    if (y > center_y + radius * 0.1 and y < center_y + radius * 0.4) {
+                    const yf = @as(f32, @floatFromInt(y));
+                    if (yf > center_y + radius * 0.1 and yf < center_y + radius * 0.4) {
                         const smile_dx = @as(f32, @floatFromInt(x)) - center_x;
                         const smile_curve = center_y + radius * 0.2 + (smile_dx * smile_dx) / (radius * 0.8);
                         if (@abs(@as(f32, @floatFromInt(y)) - smile_curve) < 2.0 and @abs(smile_dx) < radius * 0.4) {
@@ -382,12 +384,12 @@ pub const EmojiRenderer = struct {
         };
     }
 
-    fn scaleColorGlyph(self: *Self, glyph: ColorGlyph, size: f32) ColorGlyph {
-        // For now, return the original glyph
-        // In a full implementation, this would scale the bitmap
-        _ = self;
+    fn scaleColorGlyph(self: *Self, glyph: ColorGlyph, size: f32) !ColorGlyph {
+        // Return an independent clone so the caller owns the result while the
+        // source glyph (often cache-owned) keeps sole ownership of its bitmaps.
+        // Scaling itself is not yet implemented; only ownership is duplicated.
         _ = size;
-        return glyph;
+        return try self.cloneColorGlyph(glyph);
     }
 
     pub fn isEmoji(self: *Self, codepoint: u32) bool {
@@ -422,20 +424,20 @@ pub const EmojiRenderer = struct {
         const sequence_hash = self.computeSequenceHash(sequence);
 
         if (self.sequence_cache.get(sequence_hash)) |cached| {
-            return self.scaleColorGlyph(cached, size);
+            return try self.scaleColorGlyph(cached, size);
         }
 
         if (self.shouldForceTextPresentation(sequence, options)) {
             const text_glyph = try self.renderSequenceAsText(sequence, size);
             try self.sequence_cache.put(sequence_hash, text_glyph);
-            return self.scaleColorGlyph(text_glyph, size);
+            return try self.scaleColorGlyph(text_glyph, size);
         }
 
         const info = try self.sequence_processor.getSequenceInfo(sequence);
 
         if (try self.tryRenderSequenceWithFonts(sequence, size, options)) |precomposed| {
             try self.sequence_cache.put(sequence_hash, precomposed);
-            return self.scaleColorGlyph(precomposed, size);
+            return try self.scaleColorGlyph(precomposed, size);
         }
 
         const glyph = switch (info.sequence_type) {
@@ -448,7 +450,7 @@ pub const EmojiRenderer = struct {
         };
 
         try self.sequence_cache.put(sequence_hash, glyph);
-        return self.scaleColorGlyph(glyph, size);
+        return try self.scaleColorGlyph(glyph, size);
     }
 
     fn computeSequenceHash(self: *Self, sequence: []const u32) u64 {
@@ -561,10 +563,10 @@ pub const EmojiRenderer = struct {
     fn renderSequenceWithFont(self: *Self, font: *Font, sequence: []const u32, size: f32, options: EmojiRenderOptions) !?ColorGlyph {
         if (sequence.len == 0) return null;
 
-        var glyphs = std.ArrayList(ColorGlyph).init(self.allocator);
+        var glyphs = std.ArrayList(ColorGlyph).empty;
         defer {
             for (glyphs.items) |*g| g.deinit(self.allocator);
-            glyphs.deinit();
+            glyphs.deinit(self.allocator);
         }
 
         var has_component = false;
@@ -582,7 +584,7 @@ pub const EmojiRenderer = struct {
                 return null;
             };
             errdefer component.deinit(self.allocator);
-            try glyphs.append(component);
+            try glyphs.append(self.allocator, component);
             has_component = true;
         }
 
@@ -633,25 +635,25 @@ pub const EmojiRenderer = struct {
             self.detectSkinToneModifier(sequence) orelse .default;
 
         const base_cp = components[0];
-        const base_color = (try self.renderEmoji(base_cp, size, options)) orelse try self.renderMonochromeEmoji(base_cp, size);
-        var tinted = try self.cloneColorGlyph(base_color);
+        // base_color is already owned; tint it in place rather than cloning.
+        var tinted = (try self.renderEmoji(base_cp, size, options)) orelse try self.renderMonochromeEmoji(base_cp, size);
         try self.tintGlyphForSkinTone(&tinted, tone);
 
         if (components.len == 1) {
             return tinted;
         }
 
-        var glyphs = std.ArrayList(ColorGlyph).init(self.allocator);
+        var glyphs = std.ArrayList(ColorGlyph).empty;
         defer {
             for (glyphs.items) |*g| g.deinit(self.allocator);
-            glyphs.deinit();
+            glyphs.deinit(self.allocator);
         }
 
-        try glyphs.append(tinted);
+        try glyphs.append(self.allocator, tinted);
 
         for (components[1..]) |cp| {
             const sub = try self.renderComponentGlyph(cp, size, options, false);
-            try glyphs.append(sub);
+            try glyphs.append(self.allocator, sub);
         }
 
         const composed = try self.composeColorGlyphs(glyphs.items);
@@ -713,15 +715,15 @@ pub const EmojiRenderer = struct {
             return try self.renderComponentGlyph(components[0], size, options, force_monochrome);
         }
 
-        var glyphs = std.ArrayList(ColorGlyph).init(self.allocator);
+        var glyphs = std.ArrayList(ColorGlyph).empty;
         defer {
             for (glyphs.items) |*g| g.deinit(self.allocator);
-            glyphs.deinit();
+            glyphs.deinit(self.allocator);
         }
 
         for (components) |cp| {
             const glyph = try self.renderComponentGlyph(cp, size, options, force_monochrome);
-            try glyphs.append(glyph);
+            try glyphs.append(self.allocator, glyph);
         }
 
         const composed = try self.composeColorGlyphs(glyphs.items);
@@ -733,8 +735,9 @@ pub const EmojiRenderer = struct {
             return try self.renderMonochromeEmoji(codepoint, size);
         }
 
+        // renderEmoji already returns an owned glyph; take it directly.
         if (try self.renderEmoji(codepoint, size, options)) |glyph| {
-            return try self.cloneColorGlyph(glyph);
+            return glyph;
         }
 
         return try self.renderMonochromeEmoji(codepoint, size);
@@ -745,16 +748,16 @@ pub const EmojiRenderer = struct {
             return self.renderMonochromeEmoji(0x25A1, 16.0);
         }
 
-        var flattened = std.ArrayList([]u8).init(self.allocator);
-        var widths = std.ArrayList(u32).init(self.allocator);
-        var heights = std.ArrayList(u32).init(self.allocator);
+        var flattened = std.ArrayList([]u8).empty;
+        var widths = std.ArrayList(u32).empty;
+        var heights = std.ArrayList(u32).empty;
         defer {
             for (flattened.items) |buffer| {
                 self.allocator.free(buffer);
             }
-            flattened.deinit();
-            widths.deinit();
-            heights.deinit();
+            flattened.deinit(self.allocator);
+            widths.deinit(self.allocator);
+            heights.deinit(self.allocator);
         }
 
         var total_width: u32 = 0;
@@ -764,9 +767,9 @@ pub const EmojiRenderer = struct {
             var width: u32 = 0;
             var height: u32 = 0;
             const buffer = try self.flattenGlyph(&glyph, &width, &height);
-            try flattened.append(buffer);
-            try widths.append(width);
-            try heights.append(height);
+            try flattened.append(self.allocator, buffer);
+            try widths.append(self.allocator, width);
+            try heights.append(self.allocator, height);
 
             total_width += width;
             if (height > max_height) max_height = height;
@@ -920,7 +923,7 @@ pub const EmojiRenderer = struct {
                 const r = layer.bitmap[idx];
                 const g = layer.bitmap[idx + 1];
                 const b = layer.bitmap[idx + 2];
-                const brightness = std.math.max(r, std.math.max(g, b));
+                const brightness = @max(r, @max(g, b));
                 if (brightness < 40) continue;
 
                 layer.bitmap[idx] = @intCast((@as(u32, r) * 60 + @as(u32, tint.r) * 195) / 255);
@@ -1001,7 +1004,7 @@ pub const SkinTone = enum(u8) {
 test "EmojiRenderer basic operations" {
     const allocator = std.testing.allocator;
 
-    var renderer = EmojiRenderer.init(allocator);
+    var renderer = try EmojiRenderer.init(allocator);
     defer renderer.deinit();
 
     try std.testing.expect(renderer.isEmoji(0x1F600)); // 😀
@@ -1020,7 +1023,7 @@ test "Unicode emoji detection via Unicode module" {
     try testing.expect(Unicode.getEmojiProperty('A') == .None);
 
     const allocator = std.testing.allocator;
-    var renderer = EmojiRenderer.init(allocator);
+    var renderer = try EmojiRenderer.init(allocator);
     defer renderer.deinit();
 
     const flag_sequence = [_]u32{ 0x1F1FA, 0x1F1F8 };
@@ -1044,13 +1047,15 @@ test "EmojiRenderer sequence rendering" {
 
     const thumbs_up = [_]u32{ 0x1F44D, 0x1F3FD };
     const options = EmojiRenderOptions{ .prefer_color = true, .skin_tone = .default, .text_presentation = false };
-    if (try renderer.renderEmojiSequence(&thumbs_up, 24.0, options)) |glyph| {
+    if (try renderer.renderEmojiSequence(&thumbs_up, 24.0, options)) |rendered| {
+        var glyph = rendered;
         defer glyph.deinit(renderer.allocator);
         try std.testing.expect(glyph.layers.len >= 1);
     }
 
     const family = [_]u32{ 0x1F468, 0x200D, 0x1F469, 0x200D, 0x1F466 };
-    if (try renderer.renderEmojiSequence(&family, 24.0, options)) |glyph| {
+    if (try renderer.renderEmojiSequence(&family, 24.0, options)) |rendered| {
+        var glyph = rendered;
         defer glyph.deinit(renderer.allocator);
         try std.testing.expect(glyph.metrics.width > 0);
     }

@@ -1,11 +1,13 @@
 const std = @import("std");
 const root = @import("root.zig");
 const Font = @import("font.zig").Font;
+const Glyph = @import("glyph.zig").Glyph;
 const FontParser = @import("font_parser.zig").FontParser;
 
 pub const FontManager = struct {
     allocator: std.mem.Allocator,
     font_cache: std.StringHashMap(*Font),
+    glyph_cache: std.AutoHashMap(u64, *Glyph),
     system_font_paths: std.ArrayList([]const u8),
     fallback_fonts: std.ArrayList(*Font),
     system_fonts_scanned: bool,
@@ -16,6 +18,7 @@ pub const FontManager = struct {
         var manager = Self{
             .allocator = allocator,
             .font_cache = std.StringHashMap(*Font).init(allocator),
+            .glyph_cache = std.AutoHashMap(u64, *Glyph).init(allocator),
             .system_font_paths = undefined,
             .fallback_fonts = undefined,
             .system_fonts_scanned = false,
@@ -33,6 +36,14 @@ pub const FontManager = struct {
             self.allocator.destroy(entry.value_ptr.*);
         }
         self.font_cache.deinit();
+
+        // Free cached glyphs
+        var glyph_iterator = self.glyph_cache.valueIterator();
+        while (glyph_iterator.next()) |glyph_ptr| {
+            glyph_ptr.*.deinit(self.allocator);
+            self.allocator.destroy(glyph_ptr.*);
+        }
+        self.glyph_cache.deinit();
 
         // Free system font paths
         for (self.system_font_paths.items) |path| {
@@ -61,18 +72,19 @@ pub const FontManager = struct {
     }
 
     fn scanFontDirectory(self: *Self, dir_path: []const u8) !void {
-        var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch |err| switch (err) {
+        const io = std.Io.Threaded.global_single_threaded.io();
+        var dir = std.Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch |err| switch (err) {
             error.FileNotFound => return, // Directory doesn't exist, skip
             else => return err,
         };
-        defer dir.close();
+        defer dir.close(io);
 
         var iterator = dir.iterate();
-        while (try iterator.next()) |entry| {
+        while (try iterator.next(io)) |entry| {
             if (entry.kind == .file) {
                 if (isFontFile(entry.name)) {
                     const full_path = try std.fs.path.join(self.allocator, &[_][]const u8{ dir_path, entry.name });
-                    try self.system_font_paths.append(full_path);
+                    try self.system_font_paths.append(self.allocator, full_path);
                 }
             }
         }
@@ -96,7 +108,8 @@ pub const FontManager = struct {
         }
 
         // Load font from file
-        const font_data = try std.fs.cwd().readFileAlloc(self.allocator, font_path, 50 * 1024 * 1024); // 50MB max
+        const io = std.Io.Threaded.global_single_threaded.io();
+        const font_data = try std.Io.Dir.cwd().readFileAlloc(io, font_path, self.allocator, std.Io.Limit.limited(50 * 1024 * 1024)); // 50MB max
         defer self.allocator.free(font_data);
 
         const font = try self.allocator.create(Font);
@@ -151,7 +164,7 @@ pub const FontManager = struct {
         for (families) |family| {
             const font = try self.findFont(family, .{ .size = 12.0 }) orelse continue;
             if (!self.hasFallbackFont(font)) {
-                try self.fallback_fonts.append(font);
+                try self.fallback_fonts.append(self.allocator, font);
             }
         }
     }
@@ -204,9 +217,33 @@ pub const FontManager = struct {
 
         for (fallback_names) |name| {
             if (try self.findFont(name, .{ .size = 12.0 })) |font| {
-                try self.fallback_fonts.append(font);
+                try self.fallback_fonts.append(self.allocator, font);
             }
         }
+    }
+
+    /// Returns true if a renderable glyph can be produced for the codepoint.
+    pub fn hasGlyph(self: *Self, codepoint: u32) bool {
+        if (self.getGlyph(codepoint, 12.0)) |_| {
+            return true;
+        } else |_| {
+            return false;
+        }
+    }
+
+    /// Render (and cache) a glyph for a codepoint at the given size using the
+    /// first available fallback font. Returned pointer is owned by the manager
+    /// and freed in `deinit`.
+    pub fn getGlyph(self: *Self, codepoint: u32, size: f32) !*Glyph {
+        const key = (@as(u64, codepoint) << 32) | @as(u64, @as(u32, @bitCast(size)));
+        if (self.glyph_cache.get(key)) |cached| return cached;
+
+        const font = (try self.getFallbackFont()) orelse return error.FontNotFound;
+        const glyph = try self.allocator.create(Glyph);
+        errdefer self.allocator.destroy(glyph);
+        glyph.* = try font.getGlyph(codepoint, size);
+        try self.glyph_cache.put(key, glyph);
+        return glyph;
     }
 
     fn getSystemFontPaths() []const []const u8 {

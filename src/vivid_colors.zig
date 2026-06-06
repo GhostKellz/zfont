@@ -59,10 +59,10 @@ pub const VividColorRenderer = struct {
 
     // Terminal color capabilities detection
     pub const TerminalCapabilities = struct {
-        true_color: bool = false,      // 24-bit RGB
-        color_256: bool = false,       // 256 color palette
-        color_16: bool = false,        // 16 basic colors
-        color_8: bool = false,         // 8 basic colors
+        true_color: bool = false, // 24-bit RGB
+        color_256: bool = false, // 256 color palette
+        color_16: bool = false, // 16 basic colors
+        color_8: bool = false, // 8 basic colors
         italic: bool = false,
         bold: bool = false,
         underline: bool = false,
@@ -72,14 +72,15 @@ pub const VividColorRenderer = struct {
             var caps = TerminalCapabilities{};
 
             // Check environment variables
-            if (std.posix.getenv("COLORTERM")) |colorterm| {
+            if (std.Io.Threaded.global_single_threaded.environ.process_environ.getPosix("COLORTERM")) |colorterm| {
                 if (std.mem.eql(u8, colorterm, "truecolor") or
-                    std.mem.eql(u8, colorterm, "24bit")) {
+                    std.mem.eql(u8, colorterm, "24bit"))
+                {
                     caps.true_color = true;
                 }
             }
 
-            if (std.posix.getenv("TERM")) |term| {
+            if (std.Io.Threaded.global_single_threaded.environ.process_environ.getPosix("TERM")) |term| {
                 if (std.mem.indexOf(u8, term, "256") != null) {
                     caps.color_256 = true;
                 } else if (std.mem.indexOf(u8, term, "color") != null) {
@@ -91,7 +92,8 @@ pub const VividColorRenderer = struct {
                 // Most modern terminals support these
                 if (std.mem.indexOf(u8, term, "xterm") != null or
                     std.mem.indexOf(u8, term, "screen") != null or
-                    std.mem.indexOf(u8, term, "tmux") != null) {
+                    std.mem.indexOf(u8, term, "tmux") != null)
+                {
                     caps.italic = true;
                     caps.bold = true;
                     caps.underline = true;
@@ -378,7 +380,7 @@ pub const VividColorRenderer = struct {
 
     // Enhanced text rendering with vivid colors
     pub fn renderText(self: *Self, text: []const u8, fg_color: Color, bg_color: ?Color, style: TextStyle) ![]u8 {
-        var result = std.ArrayList(u8).init(self.allocator);
+        var result = std.ArrayList(u8).empty;
 
         // Apply gamma correction
         const gamma_fg = self.applyGamma(fg_color);
@@ -391,38 +393,38 @@ pub const VividColorRenderer = struct {
         if (caps.true_color) {
             const fg_escape = try self.generateTrueColorEscape(gamma_fg, false);
             defer self.allocator.free(fg_escape);
-            try result.appendSlice(fg_escape);
+            try result.appendSlice(self.allocator, fg_escape);
 
             if (gamma_bg) |bg| {
                 const bg_escape = try self.generateTrueColorEscape(bg, true);
                 defer self.allocator.free(bg_escape);
-                try result.appendSlice(bg_escape);
+                try result.appendSlice(self.allocator, bg_escape);
             }
         } else if (caps.color_256) {
             const fg_escape = try self.generate256ColorEscape(gamma_fg, false);
             defer self.allocator.free(fg_escape);
-            try result.appendSlice(fg_escape);
+            try result.appendSlice(self.allocator, fg_escape);
 
             if (gamma_bg) |bg| {
                 const bg_escape = try self.generate256ColorEscape(bg, true);
                 defer self.allocator.free(bg_escape);
-                try result.appendSlice(bg_escape);
+                try result.appendSlice(self.allocator, bg_escape);
             }
         }
 
         // Apply text styling
-        if (style.bold and caps.bold) try result.appendSlice("\x1b[1m");
-        if (style.italic and caps.italic) try result.appendSlice("\x1b[3m");
-        if (style.underline and caps.underline) try result.appendSlice("\x1b[4m");
-        if (style.strikethrough and caps.strikethrough) try result.appendSlice("\x1b[9m");
+        if (style.bold and caps.bold) try result.appendSlice(self.allocator, "\x1b[1m");
+        if (style.italic and caps.italic) try result.appendSlice(self.allocator, "\x1b[3m");
+        if (style.underline and caps.underline) try result.appendSlice(self.allocator, "\x1b[4m");
+        if (style.strikethrough and caps.strikethrough) try result.appendSlice(self.allocator, "\x1b[9m");
 
         // Add the actual text
-        try result.appendSlice(text);
+        try result.appendSlice(self.allocator, text);
 
         // Reset formatting
-        try result.appendSlice("\x1b[0m");
+        try result.appendSlice(self.allocator, "\x1b[0m");
 
-        return result.toOwnedSlice();
+        return result.toOwnedSlice(self.allocator);
     }
 
     pub const TextStyle = struct {

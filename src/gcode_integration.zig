@@ -15,32 +15,53 @@ pub const GcodeTextProcessor = struct {
     pub fn init(allocator: std.mem.Allocator) !Self {
         return Self{
             .allocator = allocator,
-            .bidi_processor = try gcode.BiDi.init(allocator),
-            .script_detector = try gcode.ScriptDetector.init(allocator),
+            .bidi_processor = gcode.BiDi.init(allocator),
+            .script_detector = gcode.ScriptDetector.init(allocator),
             .word_iterator = null, // Created per-text
         };
     }
 
     pub fn deinit(self: *Self) void {
-        if (self.bidi_processor) |*bidi| bidi.deinit();
-        if (self.script_detector) |*detector| detector.deinit();
-        if (self.word_iterator) |*iter| iter.deinit();
+        self.* = undefined;
     }
 
     // Enhanced BiDi processing using gcode's superior algorithm
     pub fn processTextWithBiDi(self: *Self, text: []const u8, base_direction: ?BiDiDirection) !BiDiResult {
         const bidi = &self.bidi_processor.?;
 
-        // gcode automatically detects direction if not specified
-        const direction = base_direction orelse .auto;
-        const runs = try bidi.processText(text, direction);
+        // Decode UTF-8 into codepoints; gcode processText expects []const u32.
+        var codepoints: std.ArrayList(u32) = .empty;
+        defer codepoints.deinit(self.allocator);
+        {
+            var byte_index: usize = 0;
+            while (byte_index < text.len) {
+                const char_len = std.unicode.utf8ByteSequenceLength(text[byte_index]) catch 1;
+                if (byte_index + char_len > text.len) break;
+                const cp = std.unicode.utf8Decode(text[byte_index .. byte_index + char_len]) catch {
+                    byte_index += 1;
+                    continue;
+                };
+                try codepoints.append(self.allocator, cp);
+                byte_index += char_len;
+            }
+        }
+
+        // Map the zfont direction request onto gcode's Direction; gcode has no
+        // explicit "auto", so derive the base direction from the text instead.
+        const direction: gcode.Direction = switch (base_direction orelse .auto) {
+            .ltr => .LTR,
+            .rtl => .RTL,
+            .auto => bidi.getBaseDirection(codepoints.items),
+        };
+        const runs = try bidi.processText(codepoints.items, direction);
+        defer self.allocator.free(runs);
 
         var result = BiDiResult.init(self.allocator);
 
         for (runs) |run| {
             const text_slice = text[run.start..run.end()];
 
-            try result.runs.append(BiDiRun{
+            try result.runs.append(self.allocator, BiDiRun{
                 .text = try self.allocator.dupe(u8, text_slice),
                 .start = run.start,
                 .length = run.length,
@@ -55,19 +76,38 @@ pub const GcodeTextProcessor = struct {
     // Script detection for intelligent font selection
     pub fn detectScriptRuns(self: *Self, text: []const u8) ![]ScriptRun {
         const detector = &self.script_detector.?;
-        const runs = try detector.detectRuns(text);
 
-        var result = std.ArrayList(ScriptRun).init(self.allocator);
+        // Decode UTF-8 into codepoints; gcode detectRuns expects []const u32.
+        var codepoints: std.ArrayList(u32) = .empty;
+        defer codepoints.deinit(self.allocator);
+        {
+            var byte_index: usize = 0;
+            while (byte_index < text.len) {
+                const char_len = std.unicode.utf8ByteSequenceLength(text[byte_index]) catch 1;
+                if (byte_index + char_len > text.len) break;
+                const cp = std.unicode.utf8Decode(text[byte_index .. byte_index + char_len]) catch {
+                    byte_index += 1;
+                    continue;
+                };
+                try codepoints.append(self.allocator, cp);
+                byte_index += char_len;
+            }
+        }
+
+        const runs = try detector.detectRuns(codepoints.items);
+        defer self.allocator.free(runs);
+
+        var result: std.ArrayList(ScriptRun) = .empty;
 
         for (runs) |run| {
             const script_info = ScriptInfo{
                 .script = convertGcodeScript(run.script),
-                .requires_complex_shaping = run.requiresComplexShaping(),
-                .requires_bidi = run.requiresBiDi(),
-                .writing_direction = if (run.isRTL()) .rtl else .ltr,
+                .requires_complex_shaping = run.script.requiresComplexShaping(),
+                .requires_bidi = run.script.isRTL(),
+                .writing_direction = if (run.script.isRTL()) .rtl else .ltr,
             };
 
-            try result.append(ScriptRun{
+            try result.append(self.allocator, ScriptRun{
                 .text = text[run.start..run.end()],
                 .start = run.start,
                 .length = run.length,
@@ -75,7 +115,7 @@ pub const GcodeTextProcessor = struct {
             });
         }
 
-        return result.toOwnedSlice();
+        return result.toOwnedSlice(self.allocator);
     }
 
     // Advanced word boundary detection (UAX #29 compliant)
@@ -83,37 +123,85 @@ pub const GcodeTextProcessor = struct {
         self.word_iterator = gcode.WordIterator.init(text);
         var iter = &self.word_iterator.?;
 
-        var boundaries = std.ArrayList(WordBoundary).init(self.allocator);
+        var boundaries: std.ArrayList(WordBoundary) = .empty;
 
-        while (iter.next()) |word| {
-            try boundaries.append(WordBoundary{
-                .start = word.start,
-                .end = word.end,
-                .word_type = convertGcodeWordType(word.word_type),
-                .is_emoji_sequence = word.isEmojiSequence(),
-                .grapheme_count = word.getGraphemeCount(),
+        // gcode's WordIterator yields word *segments* ([]const u8); track the
+        // running byte offset to recover [start, end) boundaries. The richer
+        // per-word metadata (type/emoji/grapheme-count) is not provided by the
+        // flat gcode API, so derive a coarse word type and sensible defaults.
+        var offset: usize = 0;
+        while (iter.next()) |segment| {
+            const start = offset;
+            const end = offset + segment.len;
+            offset = end;
+
+            try boundaries.append(self.allocator, WordBoundary{
+                .start = start,
+                .end = end,
+                .word_type = classifyWordSegment(segment),
+                .is_emoji_sequence = segmentIsEmoji(segment),
+                .grapheme_count = countGraphemes(segment),
             });
         }
 
-        return boundaries.toOwnedSlice();
+        return boundaries.toOwnedSlice(self.allocator);
     }
 
-    // Find word boundary from cursor position (for text selection)
+    // Find word boundary from cursor position (for text selection).
+    // gcode exposes no findWordBoundary; reconstruct boundaries from the
+    // segment offsets produced by gcode.wordIterator.
     pub fn findWordBoundary(self: *Self, text: []const u8, cursor_pos: usize, direction: BoundaryDirection) !usize {
         _ = self;
+        var iter = gcode.wordIterator(text);
+        var offset: usize = 0;
+
         return switch (direction) {
-            .forward => gcode.findWordBoundary(text, cursor_pos, .forward),
-            .backward => gcode.findWordBoundary(text, cursor_pos, .backward),
+            .forward => blk: {
+                // First segment end strictly after the cursor.
+                while (iter.next()) |segment| {
+                    const end = offset + segment.len;
+                    if (end > cursor_pos) break :blk end;
+                    offset = end;
+                }
+                break :blk text.len;
+            },
+            .backward => blk: {
+                // Last segment start at or before the cursor.
+                var boundary: usize = 0;
+                while (iter.next()) |segment| {
+                    if (offset >= cursor_pos) break;
+                    boundary = offset;
+                    offset += segment.len;
+                }
+                break :blk boundary;
+            },
         };
     }
 
     // Complex script analysis for advanced shaping
     pub fn analyzeComplexScript(self: *Self, text: []const u8) ![]ComplexScriptAnalysis {
-        const analyzer = try gcode.ComplexScriptAnalyzer.init(self.allocator);
-        defer analyzer.deinit();
+        const analyzer = gcode.ComplexScriptAnalyzer.init(self.allocator);
 
-        const analyses = try analyzer.analyzeText(text);
-        var result = std.ArrayList(ComplexScriptAnalysis).init(self.allocator);
+        // Decode UTF-8 into codepoints; gcode analyzeText expects []const u32.
+        var codepoints: std.ArrayList(u32) = .empty;
+        defer codepoints.deinit(self.allocator);
+        {
+            var byte_index: usize = 0;
+            while (byte_index < text.len) {
+                const char_len = std.unicode.utf8ByteSequenceLength(text[byte_index]) catch 1;
+                if (byte_index + char_len > text.len) break;
+                const cp = std.unicode.utf8Decode(text[byte_index .. byte_index + char_len]) catch {
+                    byte_index += 1;
+                    continue;
+                };
+                try codepoints.append(self.allocator, cp);
+                byte_index += char_len;
+            }
+        }
+
+        const analyses = try analyzer.analyzeText(codepoints.items);
+        defer self.allocator.free(analyses);
+        var result: std.ArrayList(ComplexScriptAnalysis) = .empty;
 
         for (analyses, 0..) |analysis, i| {
             _ = i;
@@ -123,32 +211,60 @@ pub const GcodeTextProcessor = struct {
                 .arabic_form = if (analysis.arabic_form) |form| convertArabicForm(form) else null,
                 .indic_category = if (analysis.indic_category) |cat| convertIndicCategory(cat) else null,
                 .display_width = analysis.getDisplayWidth(),
-                .joining_behavior = convertJoiningBehavior(analysis.joining_behavior),
+                .joining_behavior = if (analysis.joining_type) |jt| convertJoiningBehavior(jt) else .none,
             };
 
-            try result.append(script_analysis);
+            try result.append(self.allocator, script_analysis);
         }
 
-        return result.toOwnedSlice();
+        return result.toOwnedSlice(self.allocator);
     }
 
     // Terminal-optimized cursor positioning in complex text
     pub fn calculateCursorPosition(self: *Self, text: []const u8, logical_pos: usize, base_direction: ?BiDiDirection) !usize {
-        const direction = base_direction orelse .auto;
-        return try gcode.calculateCursorPosition(self.allocator, text, logical_pos, direction);
+        // Decode UTF-8 into codepoints; gcode calculateCursorPosition expects []const u32.
+        var codepoints: std.ArrayList(u32) = .empty;
+        defer codepoints.deinit(self.allocator);
+        {
+            var byte_index: usize = 0;
+            while (byte_index < text.len) {
+                const char_len = std.unicode.utf8ByteSequenceLength(text[byte_index]) catch 1;
+                if (byte_index + char_len > text.len) break;
+                const cp = std.unicode.utf8Decode(text[byte_index .. byte_index + char_len]) catch {
+                    byte_index += 1;
+                    continue;
+                };
+                try codepoints.append(self.allocator, cp);
+                byte_index += char_len;
+            }
+        }
+
+        const direction: gcode.Direction = switch (base_direction orelse .auto) {
+            .ltr => .LTR,
+            .rtl => .RTL,
+            .auto => self.bidi_processor.?.getBaseDirection(codepoints.items),
+        };
+        return try gcode.calculateCursorPosition(self.allocator, codepoints.items, logical_pos, direction);
     }
 
     // Complete text analysis for zfont rendering pipeline
     pub fn analyzeCompleteText(self: *Self, text: []const u8) !CompleteTextAnalysis {
         // Get all analysis components
         const script_runs = try self.detectScriptRuns(text);
-        const bidi_result = try self.processTextWithBiDi(text, null);
+        var bidi_result = try self.processTextWithBiDi(text, null);
         const word_boundaries = try self.getWordBoundaries(text);
         const complex_analysis = try self.analyzeComplexScript(text);
 
+        // Take ownership of the BiDi runs: `runs.items` aliases the ArrayList's
+        // backing buffer (len-sliced, not capacity-sliced), so freeing it later
+        // would corrupt the allocator. toOwnedSlice yields a real allocation
+        // that deallocateAnalysis can free exactly once. The duped per-run
+        // `text` allocations are then owned by CompleteTextAnalysis as well.
+        const bidi_runs = try bidi_result.runs.toOwnedSlice(self.allocator);
+
         return CompleteTextAnalysis{
             .script_runs = script_runs,
-            .bidi_runs = bidi_result.runs.items,
+            .bidi_runs = bidi_runs,
             .word_boundaries = word_boundaries,
             .complex_analysis = complex_analysis,
             .requires_complex_shaping = self.requiresComplexShaping(script_runs),
@@ -186,7 +302,7 @@ pub const BiDiResult = struct {
 
     pub fn init(allocator: std.mem.Allocator) BiDiResult {
         return BiDiResult{
-            .runs = std.ArrayList(BiDiRun).init(allocator),
+            .runs = .empty,
             .allocator = allocator,
         };
     }
@@ -195,7 +311,7 @@ pub const BiDiResult = struct {
         for (self.runs.items) |*run| {
             self.allocator.free(run.text);
         }
-        self.runs.deinit();
+        self.runs.deinit(self.allocator);
     }
 };
 
@@ -275,11 +391,11 @@ pub const ComplexScriptAnalysis = struct {
 };
 
 pub const ScriptCategory = enum {
-    simple,      // Simple Latin-style rendering
-    joining,     // Arabic-style joining
-    indic,       // Complex Indic scripts
-    cjk,         // CJK ideographs
-    combining,   // Combining marks
+    simple, // Simple Latin-style rendering
+    joining, // Arabic-style joining
+    indic, // Complex Indic scripts
+    cjk, // CJK ideographs
+    combining, // Combining marks
 };
 
 pub const ArabicForm = enum {
@@ -336,55 +452,88 @@ fn convertGcodeScript(script: gcode.Script) ScriptType {
     };
 }
 
-fn convertGcodeWordType(word_type: gcode.WordType) WordType {
-    return switch (word_type) {
-        .Alphabetic => .alphabetic,
-        .Numeric => .numeric,
-        .Punctuation => .punctuation,
-        .Whitespace => .whitespace,
-        .Emoji => .emoji,
-        else => .other,
-    };
+// gcode's WordIterator yields plain byte segments without a word-type tag, so
+// derive a coarse classification from the segment's leading codepoint.
+fn classifyWordSegment(segment: []const u8) WordType {
+    if (segment.len == 0) return .other;
+    const cp = std.unicode.utf8Decode(segment[0 .. std.unicode.utf8ByteSequenceLength(segment[0]) catch 1]) catch return .other;
+    if (cp < 0x80) {
+        const byte: u8 = @intCast(cp);
+        if (std.ascii.isAlphabetic(byte)) return .alphabetic;
+        if (std.ascii.isDigit(byte)) return .numeric;
+        if (std.ascii.isWhitespace(byte)) return .whitespace;
+        return .punctuation;
+    }
+    return .alphabetic;
 }
 
-fn convertGcodeCategory(category: gcode.ScriptCategory) ScriptCategory {
+/// True if the segment contains any Extended_Pictographic code point, i.e. it is
+/// (part of) an emoji sequence rather than ordinary text.
+fn segmentIsEmoji(segment: []const u8) bool {
+    var iter = gcode.codePointIterator(segment);
+    while (iter.next()) |cp| {
+        if (gcode.getProperties(@intCast(cp.code)).grapheme_boundary_class.isExtendedPictographic()) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// Count user-perceived grapheme clusters in a UTF-8 segment.
+fn countGraphemes(segment: []const u8) usize {
+    var iter = gcode.graphemeIterator(segment);
+    var count: usize = 0;
+    while (iter.next()) |_| count += 1;
+    return count;
+}
+
+fn convertGcodeCategory(category: gcode.ComplexScriptCategory) ScriptCategory {
     return switch (category) {
-        .Simple => .simple,
-        .Joining => .joining,
-        .Indic => .indic,
-        .CJK => .cjk,
-        .Combining => .combining,
+        .simple => .simple,
+        .joining => .joining,
+        .indic => .indic,
+        .cjk => .cjk,
+        // gcode exposes more categories than zfont; fold the remainder onto the
+        // closest zfont concept.
+        .southeast_asian => .indic,
+        .other_complex => .combining,
     };
 }
 
 fn convertArabicForm(form: gcode.ArabicForm) ArabicForm {
     return switch (form) {
-        .Isolated => .isolated,
-        .Initial => .initial,
-        .Medial => .medial,
-        .Final => .final,
+        .isolated => .isolated,
+        .initial => .initial,
+        .medial => .medial,
+        .final => .final,
     };
 }
 
 fn convertIndicCategory(category: gcode.IndicCategory) IndicCategory {
     return switch (category) {
-        .Consonant => .consonant,
-        .VowelIndependent => .vowel_independent,
-        .VowelDependent => .vowel_dependent,
-        .Nukta => .nukta,
-        .Virama => .virama,
-        .CombiningMark => .combining_mark,
+        .consonant,
+        .consonant_dead,
+        .consonant_with_stacker,
+        .consonant_prefixed,
+        .consonant_preceding_repha,
+        .consonant_succeeding_repha,
+        => .consonant,
+        .vowel_independent => .vowel_independent,
+        .vowel_dependent => .vowel_dependent,
+        .nukta => .nukta,
+        .virama, .invisible_stacker => .virama,
+        else => .combining_mark,
     };
 }
 
-fn convertJoiningBehavior(behavior: gcode.JoiningBehavior) JoiningBehavior {
+fn convertJoiningBehavior(behavior: gcode.ArabicJoiningType) JoiningBehavior {
     return switch (behavior) {
-        .None => .none,
-        .JoinCausing => .join_causing,
-        .DualJoining => .dual_joining,
-        .LeftJoining => .left_joining,
-        .RightJoining => .right_joining,
-        .Transparent => .transparent,
+        .U => .none,
+        .C => .join_causing,
+        .D => .dual_joining,
+        .L => .left_joining,
+        .R => .right_joining,
+        .T => .transparent,
     };
 }
 
@@ -448,6 +597,36 @@ pub const GcodeFontManager = struct {
         return self.script_font_map.get(script) orelse "DejaVu Sans"; // Fallback
     }
 
+    // Map a script run's bytes onto glyphs with monospace advances. The hints
+    // steer ordering (RTL runs are emitted in visual order) but the per-glyph
+    // mapping is a 1:1 codepoint placeholder until a full shaper is wired in.
+    fn shapeRun(self: *Self, text: []const u8, font_name: []const u8, hints: ShapingHints) !ShapedRun {
+        _ = font_name;
+
+        var glyphs = std.ArrayList(u32).empty;
+        errdefer glyphs.deinit(self.allocator);
+        var positions = std.ArrayList(f32).empty;
+        errdefer positions.deinit(self.allocator);
+
+        var advance: f32 = 0;
+        var view = (try std.unicode.Utf8View.init(text)).iterator();
+        while (view.nextCodepoint()) |cp| {
+            try glyphs.append(self.allocator, cp);
+            try positions.append(self.allocator, advance);
+            advance += 1.0;
+        }
+
+        var run = ShapedRun{
+            .glyphs = try glyphs.toOwnedSlice(self.allocator),
+            .positions = try positions.toOwnedSlice(self.allocator),
+            .start_offset = 0,
+            .length = text.len,
+        };
+
+        if (hints.writing_direction == .rtl) run.reverseForRTL();
+        return run;
+    }
+
     // Main text processing pipeline using gcode
     pub fn processAndRenderText(self: *Self, text: []const u8) !RenderedText {
         // Step 1: Complete analysis using gcode
@@ -468,13 +647,13 @@ pub const GcodeFontManager = struct {
             };
 
             // Render with zfont using gcode intelligence
-            const shaped_run = try self.base_font_manager.shapeTextWithHints(
+            const shaped_run = try self.shapeRun(
                 script_run.text,
                 font_name,
                 shaping_hints,
             );
 
-            try rendered.runs.append(shaped_run);
+            try rendered.runs.append(self.allocator, shaped_run);
         }
 
         // Step 3: Apply BiDi layout if needed
@@ -487,6 +666,9 @@ pub const GcodeFontManager = struct {
 
     fn deallocateAnalysis(self: *Self, analysis: *const CompleteTextAnalysis) void {
         self.allocator.free(analysis.script_runs);
+        // Each BiDiRun owns a duped `text`; free those before the slice itself.
+        for (analysis.bidi_runs) |run| self.allocator.free(run.text);
+        self.allocator.free(analysis.bidi_runs);
         self.allocator.free(analysis.word_boundaries);
         self.allocator.free(analysis.complex_analysis);
     }
@@ -519,13 +701,17 @@ pub const RenderedText = struct {
 
     pub fn init(allocator: std.mem.Allocator) RenderedText {
         return RenderedText{
-            .runs = std.ArrayList(ShapedRun).init(allocator),
+            .runs = .empty,
             .allocator = allocator,
         };
     }
 
     pub fn deinit(self: *RenderedText) void {
-        self.runs.deinit();
+        for (self.runs.items) |run| {
+            self.allocator.free(run.glyphs);
+            self.allocator.free(run.positions);
+        }
+        self.runs.deinit(self.allocator);
     }
 };
 

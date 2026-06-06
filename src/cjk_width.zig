@@ -6,7 +6,7 @@ const gcode = @import("gcode");
 // Handles proper display width for Han, Hiragana, Katakana, Hangul
 pub const CJKWidthProcessor = struct {
     allocator: std.mem.Allocator,
-    script_detector: gcode.script.ScriptDetector,
+    script_detector: gcode.ScriptDetector,
     width_cache: WidthCache,
 
     const Self = @This();
@@ -57,7 +57,7 @@ pub const CJKWidthProcessor = struct {
     pub fn init(allocator: std.mem.Allocator) !Self {
         var processor = Self{
             .allocator = allocator,
-            .script_detector = try gcode.script.ScriptDetector.init(allocator),
+            .script_detector = gcode.ScriptDetector.init(allocator),
             .width_cache = WidthCache.init(allocator),
         };
 
@@ -66,79 +66,32 @@ pub const CJKWidthProcessor = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        self.script_detector.deinit();
         self.width_cache.deinit();
     }
 
     fn loadCJKWidthData(self: *Self) !void {
         // Load common CJK character width data
-        const cjk_data = [_]struct {
-            range_start: u32,
-            range_end: u32,
-            info: CJKCharacterInfo
-        }{
+        const cjk_data = [_]struct { range_start: u32, range_end: u32, info: CJKCharacterInfo }{
             // CJK Unified Ideographs (most common Han characters)
-            .{
-                .range_start = 0x4E00, .range_end = 0x9FFF,
-                .info = .{
-                    .display_width = 2.0, .script_type = .han, .char_category = .ideograph,
-                    .is_halfwidth = false, .is_fullwidth = true, .terminal_cells = 2
-                }
-            },
+            .{ .range_start = 0x4E00, .range_end = 0x9FFF, .info = .{ .display_width = 2.0, .script_type = .han, .char_category = .ideograph, .is_halfwidth = false, .is_fullwidth = true, .terminal_cells = 2 } },
 
             // Hiragana
-            .{
-                .range_start = 0x3040, .range_end = 0x309F,
-                .info = .{
-                    .display_width = 2.0, .script_type = .hiragana, .char_category = .syllable,
-                    .is_halfwidth = false, .is_fullwidth = true, .terminal_cells = 2
-                }
-            },
+            .{ .range_start = 0x3040, .range_end = 0x309F, .info = .{ .display_width = 2.0, .script_type = .hiragana, .char_category = .syllable, .is_halfwidth = false, .is_fullwidth = true, .terminal_cells = 2 } },
 
             // Katakana
-            .{
-                .range_start = 0x30A0, .range_end = 0x30FF,
-                .info = .{
-                    .display_width = 2.0, .script_type = .katakana, .char_category = .syllable,
-                    .is_halfwidth = false, .is_fullwidth = true, .terminal_cells = 2
-                }
-            },
+            .{ .range_start = 0x30A0, .range_end = 0x30FF, .info = .{ .display_width = 2.0, .script_type = .katakana, .char_category = .syllable, .is_halfwidth = false, .is_fullwidth = true, .terminal_cells = 2 } },
 
             // Hangul Syllables
-            .{
-                .range_start = 0xAC00, .range_end = 0xD7AF,
-                .info = .{
-                    .display_width = 2.0, .script_type = .hangul, .char_category = .syllable,
-                    .is_halfwidth = false, .is_fullwidth = true, .terminal_cells = 2
-                }
-            },
+            .{ .range_start = 0xAC00, .range_end = 0xD7AF, .info = .{ .display_width = 2.0, .script_type = .hangul, .char_category = .syllable, .is_halfwidth = false, .is_fullwidth = true, .terminal_cells = 2 } },
 
             // Halfwidth Katakana
-            .{
-                .range_start = 0xFF65, .range_end = 0xFF9F,
-                .info = .{
-                    .display_width = 1.0, .script_type = .katakana, .char_category = .syllable,
-                    .is_halfwidth = true, .is_fullwidth = false, .terminal_cells = 1
-                }
-            },
+            .{ .range_start = 0xFF65, .range_end = 0xFF9F, .info = .{ .display_width = 1.0, .script_type = .katakana, .char_category = .syllable, .is_halfwidth = true, .is_fullwidth = false, .terminal_cells = 1 } },
 
             // CJK Symbols and Punctuation
-            .{
-                .range_start = 0x3000, .range_end = 0x303F,
-                .info = .{
-                    .display_width = 2.0, .script_type = .han, .char_category = .punctuation,
-                    .is_halfwidth = false, .is_fullwidth = true, .terminal_cells = 2
-                }
-            },
+            .{ .range_start = 0x3000, .range_end = 0x303F, .info = .{ .display_width = 2.0, .script_type = .han, .char_category = .punctuation, .is_halfwidth = false, .is_fullwidth = true, .terminal_cells = 2 } },
 
             // Bopomofo
-            .{
-                .range_start = 0x3100, .range_end = 0x312F,
-                .info = .{
-                    .display_width = 1.0, .script_type = .bopomofo, .char_category = .syllable,
-                    .is_halfwidth = true, .is_fullwidth = false, .terminal_cells = 1
-                }
-            },
+            .{ .range_start = 0x3100, .range_end = 0x312F, .info = .{ .display_width = 1.0, .script_type = .bopomofo, .char_category = .syllable, .is_halfwidth = true, .is_fullwidth = false, .terminal_cells = 1 } },
         };
 
         for (cjk_data) |data| {
@@ -150,37 +103,37 @@ pub const CJKWidthProcessor = struct {
     }
 
     pub fn processCJKText(self: *Self, text: []const u8) !CJKTextResult {
-        // Use gcode script detection to identify CJK runs
-        const script_runs = try self.script_detector.detectRuns(text);
-        defer self.allocator.free(script_runs);
-
         var result = CJKTextResult.init(self.allocator);
 
         // Convert text to codepoints for analysis
-        var codepoints = std.ArrayList(u32).init(self.allocator);
-        defer codepoints.deinit();
+        var codepoints = std.ArrayList(u32).empty;
+        defer codepoints.deinit(self.allocator);
 
         var i: usize = 0;
         while (i < text.len) {
             const char_len = std.unicode.utf8ByteSequenceLength(text[i]) catch 1;
             if (i + char_len <= text.len) {
-                const codepoint = std.unicode.utf8Decode(text[i..i + char_len]) catch {
+                const codepoint = std.unicode.utf8Decode(text[i .. i + char_len]) catch {
                     i += 1;
                     continue;
                 };
-                try codepoints.append(codepoint);
+                try codepoints.append(self.allocator, codepoint);
                 i += char_len;
             } else {
                 break;
             }
         }
 
+        // Use gcode script detection to identify CJK runs (detectRuns expects []const u32)
+        const script_runs = try self.script_detector.detectRuns(codepoints.items);
+        defer self.allocator.free(script_runs);
+
         // Process each CJK character
         for (codepoints.items, 0..) |codepoint, pos| {
             if (self.isCJKCharacter(codepoint)) {
                 const char_info = try self.analyzeCJKCharacter(codepoint);
 
-                try result.cjk_characters.append(CJKCharacterData{
+                try result.cjk_characters.append(self.allocator, CJKCharacterData{
                     .codepoint = codepoint,
                     .position = pos,
                     .info = char_info,
@@ -202,16 +155,16 @@ pub const CJKWidthProcessor = struct {
         _ = self;
 
         // Check major CJK Unicode blocks
-        return (codepoint >= 0x4E00 and codepoint <= 0x9FFF) or    // CJK Unified Ideographs
-               (codepoint >= 0x3040 and codepoint <= 0x309F) or    // Hiragana
-               (codepoint >= 0x30A0 and codepoint <= 0x30FF) or    // Katakana
-               (codepoint >= 0xAC00 and codepoint <= 0xD7AF) or    // Hangul Syllables
-               (codepoint >= 0x3100 and codepoint <= 0x312F) or    // Bopomofo
-               (codepoint >= 0x3000 and codepoint <= 0x303F) or    // CJK Symbols and Punctuation
-               (codepoint >= 0xFF00 and codepoint <= 0xFFEF) or    // Halfwidth and Fullwidth Forms
-               (codepoint >= 0x3400 and codepoint <= 0x4DBF) or    // CJK Extension A
-               (codepoint >= 0x20000 and codepoint <= 0x2A6DF) or  // CJK Extension B
-               (codepoint >= 0x2A700 and codepoint <= 0x2B73F);    // CJK Extension C
+        return (codepoint >= 0x4E00 and codepoint <= 0x9FFF) or // CJK Unified Ideographs
+            (codepoint >= 0x3040 and codepoint <= 0x309F) or // Hiragana
+            (codepoint >= 0x30A0 and codepoint <= 0x30FF) or // Katakana
+            (codepoint >= 0xAC00 and codepoint <= 0xD7AF) or // Hangul Syllables
+            (codepoint >= 0x3100 and codepoint <= 0x312F) or // Bopomofo
+            (codepoint >= 0x3000 and codepoint <= 0x303F) or // CJK Symbols and Punctuation
+            (codepoint >= 0xFF00 and codepoint <= 0xFFEF) or // Halfwidth and Fullwidth Forms
+            (codepoint >= 0x3400 and codepoint <= 0x4DBF) or // CJK Extension A
+            (codepoint >= 0x20000 and codepoint <= 0x2A6DF) or // CJK Extension B
+            (codepoint >= 0x2A700 and codepoint <= 0x2B73F); // CJK Extension C
     }
 
     fn analyzeCJKCharacter(self: *Self, codepoint: u32) !CJKCharacterInfo {
@@ -293,9 +246,9 @@ pub const CJKWidthProcessor = struct {
             (codepoint >= 0x20000 and codepoint <= 0x2A6DF)) return .ideograph;
 
         // Syllabic scripts
-        if ((codepoint >= 0x3040 and codepoint <= 0x309F) or  // Hiragana
-            (codepoint >= 0x30A0 and codepoint <= 0x30FF) or  // Katakana
-            (codepoint >= 0xAC00 and codepoint <= 0xD7AF) or  // Hangul
+        if ((codepoint >= 0x3040 and codepoint <= 0x309F) or // Hiragana
+            (codepoint >= 0x30A0 and codepoint <= 0x30FF) or // Katakana
+            (codepoint >= 0xAC00 and codepoint <= 0xD7AF) or // Hangul
             (codepoint >= 0x3100 and codepoint <= 0x312F)) return .syllable; // Bopomofo
 
         // Punctuation
@@ -314,11 +267,11 @@ pub const CJKWidthProcessor = struct {
         if (codepoint >= 0xFF01 and codepoint <= 0xFF60) return true;
 
         // Most CJK characters are fullwidth by default
-        return (codepoint >= 0x4E00 and codepoint <= 0x9FFF) or    // Han
-               (codepoint >= 0x3040 and codepoint <= 0x309F) or    // Hiragana
-               (codepoint >= 0x30A0 and codepoint <= 0x30FF) or    // Katakana
-               (codepoint >= 0xAC00 and codepoint <= 0xD7AF) or    // Hangul
-               (codepoint >= 0x3000 and codepoint <= 0x303F);      // CJK Symbols
+        return (codepoint >= 0x4E00 and codepoint <= 0x9FFF) or // Han
+            (codepoint >= 0x3040 and codepoint <= 0x309F) or // Hiragana
+            (codepoint >= 0x30A0 and codepoint <= 0x30FF) or // Katakana
+            (codepoint >= 0xAC00 and codepoint <= 0xD7AF) or // Hangul
+            (codepoint >= 0x3000 and codepoint <= 0x303F); // CJK Symbols
     }
 
     fn isHalfwidthCharacter(self: *Self, codepoint: u32) bool {
@@ -375,7 +328,7 @@ pub const CJKWidthProcessor = struct {
 
         var layout = CJKTerminalLayout.init(self.allocator);
 
-        var current_line = std.ArrayList(CJKCharacterData).init(self.allocator);
+        var current_line = std.ArrayList(CJKCharacterData).empty;
         var current_line_width: u32 = 0;
 
         for (result.cjk_characters.items) |char_data| {
@@ -384,20 +337,20 @@ pub const CJKWidthProcessor = struct {
             // Check if character fits on current line
             if (current_line_width + char_width > terminal_width and current_line.items.len > 0) {
                 // Move to next line
-                try layout.lines.append(try current_line.toOwnedSlice());
-                current_line = std.ArrayList(CJKCharacterData).init(self.allocator);
+                try layout.lines.append(self.allocator, try current_line.toOwnedSlice(self.allocator));
+                current_line = std.ArrayList(CJKCharacterData).empty;
                 current_line_width = 0;
             }
 
-            try current_line.append(char_data);
+            try current_line.append(self.allocator, char_data);
             current_line_width += char_width;
         }
 
         // Add final line
         if (current_line.items.len > 0) {
-            try layout.lines.append(try current_line.toOwnedSlice());
+            try layout.lines.append(self.allocator, try current_line.toOwnedSlice(self.allocator));
         } else {
-            current_line.deinit();
+            current_line.deinit(self.allocator);
         }
 
         return layout;
@@ -406,12 +359,12 @@ pub const CJKWidthProcessor = struct {
     // Test with various CJK texts
     pub fn testCJKProcessing(self: *Self) !void {
         const test_texts = [_][]const u8{
-            "こんにちは世界",      // Japanese (Hiragana + Han)
-            "안녕하세요 세계",      // Korean (Hangul)
-            "你好世界",            // Chinese (Han)
-            "カタカナテスト",      // Japanese (Katakana)
-            "ｶﾀｶﾅﾃｽﾄ",           // Halfwidth Katakana
-            "Mixed: 日本語123",   // Mixed CJK and ASCII
+            "こんにちは世界", // Japanese (Hiragana + Han)
+            "안녕하세요 세계", // Korean (Hangul)
+            "你好世界", // Chinese (Han)
+            "カタカナテスト", // Japanese (Katakana)
+            "ｶﾀｶﾅﾃｽﾄ", // Halfwidth Katakana
+            "Mixed: 日本語123", // Mixed CJK and ASCII
         };
 
         for (test_texts) |text| {
@@ -420,20 +373,10 @@ pub const CJKWidthProcessor = struct {
             var result = try self.processCJKText(text);
             defer result.deinit();
 
-            std.log.info("Total width: {d:.1}, Terminal cells: {}, Mixed width: {}", .{
-                result.total_display_width,
-                result.total_terminal_cells,
-                result.mixed_width
-            });
+            std.log.info("Total width: {d:.1}, Terminal cells: {}, Mixed width: {}", .{ result.total_display_width, result.total_terminal_cells, result.mixed_width });
 
             for (result.cjk_characters.items) |char_data| {
-                std.log.info("  U+{X} ({}) - width: {d:.1}, cells: {}, script: {}", .{
-                    char_data.codepoint,
-                    @tagName(char_data.info.char_category),
-                    char_data.visual_width,
-                    char_data.terminal_width,
-                    @tagName(char_data.info.script_type)
-                });
+                std.log.info("  U+{X} ({s}) - width: {d:.1}, cells: {}, script: {s}", .{ char_data.codepoint, @tagName(char_data.info.char_category), char_data.visual_width, char_data.terminal_width, @tagName(char_data.info.script_type) });
             }
         }
     }
@@ -456,7 +399,7 @@ pub const CJKTextResult = struct {
 
     pub fn init(allocator: std.mem.Allocator) CJKTextResult {
         return CJKTextResult{
-            .cjk_characters = std.ArrayList(CJKCharacterData).init(allocator),
+            .cjk_characters = std.ArrayList(CJKCharacterData).empty,
             .total_display_width = 0.0,
             .total_terminal_cells = 0,
             .mixed_width = false,
@@ -465,7 +408,7 @@ pub const CJKTextResult = struct {
     }
 
     pub fn deinit(self: *CJKTextResult) void {
-        self.cjk_characters.deinit();
+        self.cjk_characters.deinit(self.allocator);
     }
 };
 
@@ -475,7 +418,7 @@ pub const CJKTerminalLayout = struct {
 
     pub fn init(allocator: std.mem.Allocator) CJKTerminalLayout {
         return CJKTerminalLayout{
-            .lines = std.ArrayList([]CJKCharacterData).init(allocator),
+            .lines = std.ArrayList([]CJKCharacterData).empty,
             .allocator = allocator,
         };
     }
@@ -484,7 +427,7 @@ pub const CJKTerminalLayout = struct {
         for (self.lines.items) |line| {
             self.allocator.free(line);
         }
-        self.lines.deinit();
+        self.lines.deinit(self.allocator);
     }
 };
 

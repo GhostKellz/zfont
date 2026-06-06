@@ -295,10 +295,10 @@ pub const FilterType = enum {
 };
 
 pub const SubpixelOrder = enum {
-    rgb,   // Red-Green-Blue horizontal
-    bgr,   // Blue-Green-Red horizontal
-    vrgb,  // Red-Green-Blue vertical
-    vbgr,  // Blue-Green-Red vertical
+    rgb, // Red-Green-Blue horizontal
+    bgr, // Blue-Green-Red horizontal
+    vrgb, // Red-Green-Blue vertical
+    vbgr, // Blue-Green-Red vertical
 };
 
 pub const RenderQuality = enum {

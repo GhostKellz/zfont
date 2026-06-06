@@ -17,31 +17,31 @@ pub const GraphemeSegmenter = struct {
     }
 
     pub fn segmentByteBreaks(self: *GraphemeSegmenter, text: []const u8) ![]usize {
-        var breaks = std.ArrayList(usize).init(self.allocator);
-        errdefer breaks.deinit();
+        var breaks = std.ArrayList(usize).empty;
+        errdefer breaks.deinit(self.allocator);
 
         var iterator = gcode.graphemeIterator(text);
         var offset: usize = 0;
 
         while (iterator.next()) |cluster| {
             offset += cluster.len;
-            try breaks.append(offset);
+            try breaks.append(self.allocator, offset);
         }
-        return breaks.toOwnedSlice();
+        return breaks.toOwnedSlice(self.allocator);
     }
 
     pub fn segmentCodepointBreaks(self: *GraphemeSegmenter, text: []const u8) ![]usize {
-        var breaks = std.ArrayList(usize).init(self.allocator);
-        errdefer breaks.deinit();
+        var breaks = std.ArrayList(usize).empty;
+        errdefer breaks.deinit(self.allocator);
 
         var iterator = gcode.graphemeIterator(text);
         var cp_count: usize = 0;
 
         while (iterator.next()) |cluster| {
             cp_count += try std.unicode.utf8CountCodepoints(cluster);
-            try breaks.append(cp_count);
+            try breaks.append(self.allocator, cp_count);
         }
 
-        return breaks.toOwnedSlice();
+        return breaks.toOwnedSlice(self.allocator);
     }
 };

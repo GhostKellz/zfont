@@ -308,7 +308,7 @@ pub const PowerLevel10k = struct {
 
         var rendered = P10kRenderedSegment{
             .allocator = self.allocator,
-            .text = std.ArrayList(u8).init(self.allocator),
+            .text = .empty,
             .width = 0,
             .segment_type = segment_type,
             .style = style,
@@ -317,7 +317,7 @@ pub const PowerLevel10k = struct {
         // Add left separator if needed
         if (style.left_separator) |sep_name| {
             if (self.getIcon(sep_name)) |icon| {
-                try rendered.text.appendSlice(icon.symbol);
+                try rendered.text.appendSlice(rendered.allocator, icon.symbol);
                 rendered.width += icon.width_hint;
             }
         }
@@ -325,23 +325,23 @@ pub const PowerLevel10k = struct {
         // Add segment icon
         if (segment_info.icon_name) |icon_name| {
             if (self.getIcon(icon_name)) |icon| {
-                try rendered.text.appendSlice(icon.symbol);
+                try rendered.text.appendSlice(rendered.allocator, icon.symbol);
                 rendered.width += icon.width_hint;
 
                 // Add spacing after icon
-                try rendered.text.append(' ');
+                try rendered.text.append(rendered.allocator, ' ');
                 rendered.width += 1;
             }
         }
 
         // Add content
-        try rendered.text.appendSlice(content);
+        try rendered.text.appendSlice(rendered.allocator, content);
         rendered.width += Unicode.stringWidth(content);
 
         // Add right separator if needed
         if (style.right_separator) |sep_name| {
             if (self.getIcon(sep_name)) |icon| {
-                try rendered.text.appendSlice(icon.symbol);
+                try rendered.text.appendSlice(rendered.allocator, icon.symbol);
                 rendered.width += icon.width_hint;
             }
         }
@@ -360,7 +360,7 @@ pub const PowerLevel10k = struct {
         };
 
         for (common_segments) |seg| {
-            const rendered = try self.renderP10kSegment(seg.segment_type, seg.content, P10kStyle.default());
+            var rendered = try self.renderP10kSegment(seg.segment_type, seg.content, P10kStyle.default());
             defer rendered.deinit();
             // Could cache these for ultra-fast rendering
         }
@@ -426,7 +426,7 @@ const P10kRenderedSegment = struct {
     style: P10kStyle,
 
     pub fn deinit(self: *P10kRenderedSegment) void {
-        self.text.deinit();
+        self.text.deinit(self.allocator);
     }
 };
 

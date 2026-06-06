@@ -9,7 +9,7 @@ pub const DynamicConfig = struct {
     config_path: []const u8,
     current_config: Config,
     watchers: std.ArrayList(ConfigWatcher),
-    mutex: std.Thread.Mutex,
+    mutex: std.atomic.Mutex,
 
     const Self = @This();
 
@@ -37,13 +37,20 @@ pub const DynamicConfig = struct {
         window_padding_y: u32,
         east_asian_width_mode: Unicode.EastAsianWidthMode,
 
-        pub fn init(_: std.mem.Allocator) Config {
+        pub fn init(allocator: std.mem.Allocator) !Config {
+            // font_family and theme_name are heap-owned (freed in deinit and on
+            // every override), so the defaults must be allocated copies.
+            const font_family = try allocator.dupe(u8, "CaskaydiaCove NFM SemiBold");
+            errdefer allocator.free(font_family);
+            const theme_name = try allocator.dupe(u8, "tokyo-night");
+            errdefer allocator.free(theme_name);
+
             return Config{
-                .font_family = "CaskaydiaCove NFM SemiBold",
+                .font_family = font_family,
                 .font_size = 15.0,
                 .font_weight = .normal,
                 .font_style = .normal,
-                .theme_name = "tokyo-night",
+                .theme_name = theme_name,
                 .theme = @import("vivid_colors.zig").VividColorRenderer.VividTheme.tokyoNight(),
                 .enable_ligatures = true,
                 .enable_kerning = true,
@@ -84,9 +91,9 @@ pub const DynamicConfig = struct {
         var config = Self{
             .allocator = allocator,
             .config_path = try allocator.dupe(u8, config_path),
-            .current_config = Config.init(allocator),
-            .watchers = std.ArrayList(ConfigWatcher).init(allocator),
-            .mutex = std.Thread.Mutex{},
+            .current_config = try Config.init(allocator),
+            .watchers = std.ArrayList(ConfigWatcher).empty,
+            .mutex = .unlocked,
         };
 
         // Try to load existing config
@@ -103,23 +110,21 @@ pub const DynamicConfig = struct {
 
     pub fn deinit(self: *Self) void {
         self.current_config.deinit(self.allocator);
-        self.watchers.deinit();
+        self.watchers.deinit(self.allocator);
         self.allocator.free(self.config_path);
     }
 
     pub fn loadConfig(self: *Self) !void {
-        const file = try std.fs.cwd().openFile(self.config_path, .{});
-        defer file.close();
-
-        const content = try file.readToEndAlloc(self.allocator, 1024 * 1024); // 1MB max
+        const io = std.Io.Threaded.global_single_threaded.io();
+        const content = try std.Io.Dir.cwd().readFileAlloc(io, self.config_path, self.allocator, std.Io.Limit.limited(1024 * 1024));
         defer self.allocator.free(content);
 
         try self.parseConfig(content);
     }
 
     fn parseConfig(self: *Self, content: []const u8) !void {
-        var lines = std.mem.split(u8, content, "\n");
-        var new_config = Config.init(self.allocator);
+        var lines = std.mem.splitScalar(u8, content, '\n');
+        var new_config = try Config.init(self.allocator);
 
         while (lines.next()) |line| {
             const trimmed = std.mem.trim(u8, line, " \t\r");
@@ -139,7 +144,7 @@ pub const DynamicConfig = struct {
         // Update theme based on theme_name
         new_config.theme = self.getThemeByName(new_config.theme_name);
 
-        self.mutex.lock();
+        while (!self.mutex.tryLock()) {}
         defer self.mutex.unlock();
 
         self.current_config.deinit(self.allocator);
@@ -190,17 +195,20 @@ pub const DynamicConfig = struct {
     }
 
     pub fn saveConfig(self: *Self) !void {
-        const file = try std.fs.cwd().createFile(self.config_path, .{});
-        defer file.close();
+        const io = std.Io.Threaded.global_single_threaded.io();
+        const file = try std.Io.Dir.cwd().createFile(io, self.config_path, .{});
+        defer file.close(io);
 
-        var writer = file.writer();
+        var write_buf: [4096]u8 = undefined;
+        var file_writer = file.writer(io, &write_buf);
+        const writer = &file_writer.interface;
 
         // Write header comment
         try writer.writeAll("# ZFont Dynamic Configuration\n");
         try writer.writeAll("# This file supports hot-reloading - changes take effect immediately\n");
         try writer.writeAll("# Use Ctrl+Shift+Comma to open configuration menu\n\n");
 
-        self.mutex.lock();
+        while (!self.mutex.tryLock()) {}
         defer self.mutex.unlock();
 
         // Font settings
@@ -247,6 +255,8 @@ pub const DynamicConfig = struct {
         try writer.writeAll("# - solarized-dark\n");
         try writer.writeAll("# - catppuccin\n");
         try writer.writeAll("# - vibrant-dark\n");
+
+        try writer.flush();
     }
 
     fn parseEastAsianWidthMode(value: []const u8) !Unicode.EastAsianWidthMode {
@@ -257,17 +267,17 @@ pub const DynamicConfig = struct {
     }
 
     pub fn addWatcher(self: *Self, callback: *const fn (config: *const Config) void) !void {
-        self.mutex.lock();
+        while (!self.mutex.tryLock()) {}
         defer self.mutex.unlock();
 
-        try self.watchers.append(ConfigWatcher{
+        try self.watchers.append(self.allocator, ConfigWatcher{
             .callback = callback,
             .context = null,
         });
     }
 
     pub fn removeWatcher(self: *Self, callback: *const fn (config: *const Config) void) void {
-        self.mutex.lock();
+        while (!self.mutex.tryLock()) {}
         defer self.mutex.unlock();
 
         for (self.watchers.items, 0..) |watcher, i| {
@@ -292,7 +302,7 @@ pub const DynamicConfig = struct {
 
     // Update specific config values at runtime
     pub fn setFontFamily(self: *Self, family: []const u8) !void {
-        self.mutex.lock();
+        while (!self.mutex.tryLock()) {}
         defer self.mutex.unlock();
 
         self.allocator.free(self.current_config.font_family);
@@ -301,7 +311,7 @@ pub const DynamicConfig = struct {
     }
 
     pub fn setFontSize(self: *Self, size: f32) !void {
-        self.mutex.lock();
+        while (!self.mutex.tryLock()) {}
         defer self.mutex.unlock();
 
         self.current_config.font_size = size;
@@ -309,7 +319,7 @@ pub const DynamicConfig = struct {
     }
 
     pub fn setTheme(self: *Self, theme_name: []const u8) !void {
-        self.mutex.lock();
+        while (!self.mutex.tryLock()) {}
         defer self.mutex.unlock();
 
         self.allocator.free(self.current_config.theme_name);
@@ -319,15 +329,15 @@ pub const DynamicConfig = struct {
     }
 
     pub fn toggleLigatures(self: *Self) void {
-        self.mutex.lock();
+        while (!self.mutex.tryLock()) {}
         defer self.mutex.unlock();
 
         self.current_config.enable_ligatures = !self.current_config.enable_ligatures;
         self.notifyWatchers();
     }
 
-    pub fn getConfig(self: *const Self) Config {
-        self.mutex.lock();
+    pub fn getConfig(self: *Self) Config {
+        while (!self.mutex.tryLock()) {}
         defer self.mutex.unlock();
 
         return self.current_config;
@@ -476,12 +486,13 @@ pub const FileWatcher = struct {
     const Self = @This();
 
     pub fn init(allocator: std.mem.Allocator, file_path: []const u8, callback: *const fn () void) !Self {
-        const stat = try std.fs.cwd().statFile(file_path);
+        const io = std.Io.Threaded.global_single_threaded.io();
+        const stat = try std.Io.Dir.cwd().statFile(io, file_path, .{});
 
         return Self{
             .allocator = allocator,
             .file_path = try allocator.dupe(u8, file_path),
-            .last_modified = stat.mtime,
+            .last_modified = @intCast(stat.mtime.nanoseconds),
             .callback = callback,
         };
     }
@@ -491,10 +502,12 @@ pub const FileWatcher = struct {
     }
 
     pub fn checkForChanges(self: *Self) !bool {
-        const stat = std.fs.cwd().statFile(self.file_path) catch return false;
+        const io = std.Io.Threaded.global_single_threaded.io();
+        const stat = std.Io.Dir.cwd().statFile(io, self.file_path, .{}) catch return false;
 
-        if (stat.mtime > self.last_modified) {
-            self.last_modified = stat.mtime;
+        const mtime_ns: i128 = @intCast(stat.mtime.nanoseconds);
+        if (mtime_ns > self.last_modified) {
+            self.last_modified = mtime_ns;
             self.callback();
             return true;
         }
@@ -509,8 +522,10 @@ test "DynamicConfig basic functionality" {
 
     const test_config_path = "/tmp/test_zfont_config.conf";
 
+    const io = std.Io.Threaded.global_single_threaded.io();
+
     // Clean up any existing test file
-    std.fs.cwd().deleteFile(test_config_path) catch {};
+    std.Io.Dir.cwd().deleteFile(io, test_config_path) catch {};
 
     var config = DynamicConfig.init(allocator, test_config_path) catch return;
     defer config.deinit();
@@ -521,5 +536,5 @@ test "DynamicConfig basic functionality" {
     try testing.expect(std.mem.eql(u8, current.theme_name, "tokyo-night-storm"));
 
     // Clean up
-    std.fs.cwd().deleteFile(test_config_path) catch {};
+    std.Io.Dir.cwd().deleteFile(io, test_config_path) catch {};
 }

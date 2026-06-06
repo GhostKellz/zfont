@@ -57,12 +57,12 @@ pub const TextLayout = struct {
         for (self.runs.items) |*run| {
             run.deinit(self.allocator);
         }
-        self.runs.clearAndFree();
+        self.runs.clearAndFree(self.allocator);
 
         for (self.lines.items) |*line| {
             line.deinit(self.allocator);
         }
-        self.lines.clearAndFree();
+        self.lines.clearAndFree(self.allocator);
 
         self.total_width = 0;
         self.total_height = 0;
@@ -84,16 +84,16 @@ pub const TextLayout = struct {
                     .script = script,
                     .direction = detectDirection(script),
                     .size = options.size,
-                    .codepoints = std.ArrayList(u32).init(self.allocator),
-                    .glyphs = std.ArrayList(ShapedGlyph).init(self.allocator),
+                    .codepoints = std.ArrayList(u32).empty,
+                    .glyphs = std.ArrayList(ShapedGlyph).empty,
                 };
 
-                try self.runs.append(run);
+                try self.runs.append(self.allocator, run);
                 current_run = &self.runs.items[self.runs.items.len - 1];
                 current_script = script;
             }
 
-            try current_run.?.codepoints.append(codepoint);
+            try current_run.?.codepoints.append(self.allocator, codepoint);
         }
     }
 
@@ -148,7 +148,7 @@ pub const TextLayout = struct {
                 .cluster = current_cluster,
             };
 
-            try run.glyphs.append(shaped_glyph);
+            try run.glyphs.append(self.allocator, shaped_glyph);
 
             if (props.width != .zero) {
                 x_offset += x_advance;
@@ -198,21 +198,21 @@ pub const TextLayout = struct {
                 // Check if we need to break the line
                 if (options.max_width > 0 and line_width + glyph_width > options.max_width) {
                     if (current_line.glyphs.items.len > 0) {
-                        try self.lines.append(current_line);
+                        try self.lines.append(self.allocator, current_line);
                         current_line = Line.init();
                         line_width = 0;
                     }
                 }
 
                 glyph.x_offset = line_width;
-                try current_line.glyphs.append(glyph.*);
+                try current_line.glyphs.append(self.allocator, glyph.*);
                 line_width += glyph_width;
             }
         }
 
         // Add the last line
         if (current_line.glyphs.items.len > 0) {
-            try self.lines.append(current_line);
+            try self.lines.append(self.allocator, current_line);
         }
 
         // Position lines vertically
@@ -242,11 +242,11 @@ pub const TextLayout = struct {
     }
 
     pub fn getGlyphPositions(self: *Self) []GlyphPosition {
-        var positions = std.ArrayList(GlyphPosition).init(self.allocator);
+        var positions = std.ArrayList(GlyphPosition).empty;
 
         for (self.lines.items) |line| {
             for (line.glyphs.items) |glyph| {
-                positions.append(GlyphPosition{
+                positions.append(self.allocator, GlyphPosition{
                     .glyph_index = glyph.glyph_index,
                     .x = glyph.x_offset,
                     .y = line.y_offset + glyph.y_offset,
@@ -254,7 +254,7 @@ pub const TextLayout = struct {
             }
         }
 
-        return positions.toOwnedSlice() catch &[_]GlyphPosition{};
+        return positions.toOwnedSlice(self.allocator) catch &[_]GlyphPosition{};
     }
 
     pub fn getDimensions(self: *Self) TextDimensions {
@@ -342,7 +342,7 @@ pub const TextDirection = enum {
     ttb,
 };
 
-fn detectScript(codepoint: u32) @import("font.zig").Script {
+pub fn detectScript(codepoint: u32) @import("font.zig").Script {
     if (Unicode.getEmojiProperty(codepoint) != .None) {
         return .emoji;
     }

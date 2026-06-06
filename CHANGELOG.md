@@ -5,6 +5,43 @@ All notable changes to ZFont will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.7] - 2026-06-05
+
+### Changed
+- Updated for Zig 0.17.0-dev compatibility (std library reorganization)
+- Migrated all source files from managed `std.ArrayList(T).init(allocator)` to the
+  unmanaged `.empty` pattern with allocator-passed methods (`.append(a, x)`,
+  `.deinit(a)`, `.toOwnedSlice(a)`, `.appendSlice(a, s)`, etc.)
+- Rewrote `threading.zig` after removal of `std.Thread.Pool`, `std.Thread.Mutex`,
+  and `std.atomic.Queue`; `FontLoader` now uses `std.Thread.spawn` with a
+  mutex-guarded queue
+- Migrated std reorganizations:
+  - `std.fs.cwd`/`Dir`/`File` → `std.Io.Dir`/`File` with a global single-threaded io
+  - `std.posix.getenv`/`std.process.getEnvVarOwned` → global `Threaded` environ
+  - `std.mem.toLower` → `std.ascii.lowerString`
+  - `std.mem.split` → `splitScalar`/`splitSequence`
+  - `std.mem.page_size` → `std.heap.page_size_min`
+- Re-integrated gcode against its flat v0.1.5 API (`gcode.BiDi`, `gcode.Script`,
+  `gcode.getScript`, `gcode.ComplexScriptAnalyzer`, etc.) replacing the old
+  submodule-style `gcode.bidi.*`/`gcode.script.*` paths
+
+### Fixed
+- ~15 latent logic bugs surfaced by a forced full-analysis compile pass
+  (emoji renderer f32/usize coercions, `EmojiInfo`/`TableRecord` visibility,
+  hinting optional-return mismatch, const-assignment in font fallback,
+  gcode integration `[]const u32` vs `[]const u8` mismatches)
+
+### Removed
+- 8 dead orphan modules that never compiled and were referenced by nothing:
+  `cell_renderer.zig`, `font_features.zig`, `grid_alignment.zig`,
+  `kde_integration.zig`, `p10k_segments.zig`, `powerline_symbols.zig`,
+  `variable_fonts.zig`, `wayland_renderer.zig`
+
+## [0.1.6] - 2026-06-05
+
+### Changed
+- Zig 0.17.0-dev compatibility fixes and dependency update
+
 ## [0.1.5] - 2025-04-22
 
 ### Changed

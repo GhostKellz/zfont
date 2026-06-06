@@ -3,144 +3,237 @@ const root = @import("root.zig");
 const gcode_integration = @import("gcode_integration.zig");
 const gcode = @import("gcode");
 
-// Advanced script processing using real gcode APIs
-// Now that gcode compiles, let's implement the actual complex script features
+// Advanced script processing using real gcode v0.1.5 APIs.
+//
+// gcode operates on Unicode codepoints (`[]const u32`) while this module's
+// public surface accepts UTF-8 (`[]const u8`). Each entry point decodes the
+// incoming text into a codepoint array and, where byte slices of the original
+// text are emitted, keeps a parallel byte-offset table so codepoint indices
+// returned by gcode can be mapped back to byte ranges.
 pub const AdvancedScriptProcessor = struct {
     allocator: std.mem.Allocator,
-    bidi_engine: gcode.bidi.BiDiEngine,
-    script_detector: gcode.script.ScriptDetector,
-    complex_analyzer: gcode.complex_script.ComplexScriptAnalyzer,
-    word_iterator: gcode.word.WordIterator,
+    bidi_engine: gcode.BiDi,
+    script_detector: gcode.ScriptDetector,
+    complex_analyzer: gcode.ComplexScriptAnalyzer,
 
     const Self = @This();
+
+    /// Decoded view of a UTF-8 string: the codepoints plus a byte-offset table.
+    /// `offsets` has `cps.len + 1` entries; `offsets[i]` is the byte offset of
+    /// codepoint `i` and `offsets[len]` is the total byte length, so any
+    /// codepoint range `[a, b)` maps to the byte slice `text[offsets[a]..offsets[b]]`.
+    const Decoded = struct {
+        cps: []u32,
+        offsets: []usize,
+        allocator: std.mem.Allocator,
+
+        fn deinit(self: *Decoded) void {
+            self.allocator.free(self.cps);
+            self.allocator.free(self.offsets);
+        }
+    };
+
+    fn decode(allocator: std.mem.Allocator, text: []const u8) !Decoded {
+        var cps = std.ArrayList(u32).empty;
+        errdefer cps.deinit(allocator);
+        var offsets = std.ArrayList(usize).empty;
+        errdefer offsets.deinit(allocator);
+
+        var idx: usize = 0;
+        while (idx < text.len) {
+            const len = std.unicode.utf8ByteSequenceLength(text[idx]) catch 1;
+            const end = @min(idx + len, text.len);
+            const cp = std.unicode.utf8Decode(text[idx..end]) catch text[idx];
+            try offsets.append(allocator, idx);
+            try cps.append(allocator, cp);
+            idx = end;
+        }
+        try offsets.append(allocator, text.len);
+
+        return Decoded{
+            .cps = try cps.toOwnedSlice(allocator),
+            .offsets = try offsets.toOwnedSlice(allocator),
+            .allocator = allocator,
+        };
+    }
 
     pub fn init(allocator: std.mem.Allocator) !Self {
         return Self{
             .allocator = allocator,
-            .bidi_engine = try gcode.bidi.BiDiEngine.init(allocator),
-            .script_detector = try gcode.script.ScriptDetector.init(allocator),
-            .complex_analyzer = try gcode.complex_script.ComplexScriptAnalyzer.init(allocator),
-            .word_iterator = gcode.word.WordIterator.init(""), // Will be reset per text
+            .bidi_engine = gcode.BiDi.init(allocator),
+            .script_detector = gcode.ScriptDetector.init(allocator),
+            .complex_analyzer = gcode.ComplexScriptAnalyzer.init(allocator),
         };
     }
 
     pub fn deinit(self: *Self) void {
-        self.bidi_engine.deinit();
-        self.script_detector.deinit();
-        self.complex_analyzer.deinit();
-        self.word_iterator.deinit();
+        self.* = undefined;
     }
 
-    // Real BiDi processing using gcode's algorithm
+    // Real BiDi processing using gcode's algorithm.
     pub fn processBiDiText(self: *Self, text: []const u8, base_direction: ?BiDiDirection) !BiDiResult {
         const direction = base_direction orelse .auto;
 
-        // Convert to gcode BiDi direction
-        const gcode_dir = switch (direction) {
-            .auto => gcode.bidi.Direction.Auto,
-            .ltr => gcode.bidi.Direction.LeftToRight,
-            .rtl => gcode.bidi.Direction.RightToLeft,
+        var decoded = try decode(self.allocator, text);
+        defer decoded.deinit();
+
+        // gcode v0.1.5 has no explicit "auto"; resolve it via getBaseDirection.
+        const gcode_dir: gcode.Direction = switch (direction) {
+            .auto => self.bidi_engine.getBaseDirection(decoded.cps),
+            .ltr => .LTR,
+            .rtl => .RTL,
         };
 
-        const runs = try self.bidi_engine.processText(text, gcode_dir);
+        const runs = try self.bidi_engine.processText(decoded.cps, gcode_dir);
+        defer self.allocator.free(runs);
 
         var result = BiDiResult.init(self.allocator);
+        errdefer result.deinit();
 
-        for (runs) |run| {
-            try result.runs.append(BiDiRun{
-                .text = text[run.start..run.end],
+        for (runs, 0..) |run, visual_index| {
+            const byte_start = decoded.offsets[run.start];
+            const byte_end = decoded.offsets[run.end()];
+            try result.runs.append(self.allocator, BiDiRun{
+                .text = text[byte_start..byte_end],
                 .start = run.start,
                 .length = run.length,
                 .level = run.level,
                 .direction = if (run.isRTL()) .rtl else .ltr,
-                .visual_order = run.visual_order,
+                // gcode.Run carries no visual_order; runs are returned in visual
+                // order, so the sequential index serves the same purpose.
+                .visual_order = visual_index,
             });
         }
 
         return result;
     }
 
-    // Real script detection using gcode
+    // Real script detection using gcode.
     pub fn detectScriptRuns(self: *Self, text: []const u8) ![]ScriptRun {
-        const runs = try self.script_detector.analyzeText(text);
+        var decoded = try decode(self.allocator, text);
+        defer decoded.deinit();
 
-        var result = std.ArrayList(ScriptRun).init(self.allocator);
+        const runs = try self.script_detector.detectRuns(decoded.cps);
+        defer self.allocator.free(runs);
+
+        var result = std.ArrayList(ScriptRun).empty;
+        errdefer result.deinit(self.allocator);
 
         for (runs) |run| {
+            const category = gcode.ComplexScriptCategory.fromScript(run.script);
             const script_info = ScriptInfo{
                 .script = convertGcodeScript(run.script),
-                .confidence = run.confidence,
-                .requires_complex_shaping = run.needsComplexShaping(),
-                .requires_bidi = run.needsBiDi(),
-                .writing_direction = if (run.isRTL()) .rtl else .ltr,
-                .common_ligatures = run.getCommonLigatures(),
+                // gcode.ScriptRun exposes no confidence metric; detection is
+                // deterministic, so report full confidence.
+                .confidence = 1.0,
+                .requires_complex_shaping = category != .simple,
+                .requires_bidi = run.script.isRTL(),
+                .writing_direction = if (run.script.isRTL()) .rtl else .ltr,
+                // gcode does not surface per-run ligature sets; callers that
+                // need ligatures resolve them from font tables.
+                .common_ligatures = &[_]u32{},
             };
 
-            try result.append(ScriptRun{
-                .text = text[run.start..run.end],
+            const byte_start = decoded.offsets[run.start];
+            const byte_end = decoded.offsets[run.end()];
+            try result.append(self.allocator, ScriptRun{
+                .text = text[byte_start..byte_end],
                 .start = run.start,
                 .length = run.length,
                 .script_info = script_info,
             });
         }
 
-        return result.toOwnedSlice();
+        return result.toOwnedSlice(self.allocator);
     }
 
-    // Real complex script analysis using gcode
+    // Real complex script analysis using gcode.
     pub fn analyzeComplexScripts(self: *Self, text: []const u8) ![]ComplexScriptAnalysis {
-        const analyses = try self.complex_analyzer.analyzeText(text);
+        var decoded = try decode(self.allocator, text);
+        defer decoded.deinit();
 
-        var result = std.ArrayList(ComplexScriptAnalysis).init(self.allocator);
+        const analyses = try self.complex_analyzer.analyzeText(decoded.cps);
+        defer self.allocator.free(analyses);
 
-        for (analyses) |analysis| {
+        var result = std.ArrayList(ComplexScriptAnalysis).empty;
+        errdefer result.deinit(self.allocator);
+
+        for (analyses, 0..) |analysis, i| {
+            const cp = decoded.cps[i];
+            const props = gcode.getProperties(@intCast(cp));
             const complex_analysis = ComplexScriptAnalysis{
-                .codepoint = analysis.codepoint,
+                // gcode.ComplexScriptAnalysis has no codepoint field; recover it
+                // from the input array index.
+                .codepoint = cp,
                 .script_category = convertScriptCategory(analysis.category),
-                .joining_type = convertJoiningType(analysis.joining_type),
+                .joining_type = if (analysis.joining_type) |jt| convertJoiningType(jt) else .none,
                 .arabic_form = if (analysis.arabic_form) |form| convertArabicForm(form) else null,
                 .indic_category = if (analysis.indic_category) |cat| convertIndicCategory(cat) else null,
-                .display_width = analysis.display_width,
-                .combining_class = analysis.combining_class,
-                .grapheme_boundary = analysis.grapheme_boundary_class,
-                .word_boundary = analysis.word_boundary_class,
-                .line_break_class = analysis.line_break_class,
+                .display_width = analysis.getDisplayWidth(),
+                .combining_class = props.combining_class,
+                .is_mark = analysis.is_mark,
+                .is_cluster_start = analysis.is_cluster_start,
+                .can_break_line = analysis.can_break_line,
             };
 
-            try result.append(complex_analysis);
+            try result.append(self.allocator, complex_analysis);
         }
 
-        return result.toOwnedSlice();
+        return result.toOwnedSlice(self.allocator);
     }
 
-    // Real word boundary detection using gcode (UAX #29)
+    // Real word boundary detection using gcode (UAX #29).
+    //
+    // gcode.wordIterator yields plain byte slices without word-type metadata, so
+    // byte offsets are tracked manually and the classification is derived from
+    // each segment's content.
     pub fn getWordBoundaries(self: *Self, text: []const u8) ![]WordBoundary {
-        self.word_iterator.reset(text);
+        var boundaries = std.ArrayList(WordBoundary).empty;
+        errdefer {
+            for (boundaries.items) |*b| self.allocator.free(b.script_runs);
+            boundaries.deinit(self.allocator);
+        }
 
-        var boundaries = std.ArrayList(WordBoundary).init(self.allocator);
+        var iter = gcode.wordIterator(text);
+        var pos: usize = 0;
+        while (iter.next()) |word| {
+            const start = pos;
+            const end = pos + word.len;
+            pos = end;
 
-        while (self.word_iterator.next()) |word| {
             const boundary_info = WordBoundary{
-                .start = word.start,
-                .end = word.end,
-                .word_type = convertWordType(word.word_type),
-                .is_emoji_sequence = word.isEmojiSequence(),
-                .grapheme_count = word.getGraphemeCount(),
-                .break_opportunity = word.getLineBreakOpportunity(),
+                .start = start,
+                .end = end,
+                .word_type = convertWordType(word),
+                .is_emoji_sequence = false,
+                .grapheme_count = countGraphemes(word),
+                // Word segments returned by gcode are themselves break
+                // opportunities at their boundaries.
+                .break_opportunity = .allowed,
                 .script_runs = try self.getWordScriptRuns(word),
             };
 
-            try boundaries.append(boundary_info);
+            try boundaries.append(self.allocator, boundary_info);
         }
 
-        return boundaries.toOwnedSlice();
+        return boundaries.toOwnedSlice(self.allocator);
     }
 
-    fn getWordScriptRuns(self: *Self, word: gcode.word.Word) ![]u8 {
-        // Get script information for word
-        const runs = try self.script_detector.analyzeText(word.getText());
+    fn countGraphemes(segment: []const u8) usize {
+        var count: usize = 0;
+        var it = gcode.graphemeIterator(segment);
+        while (it.next()) |_| count += 1;
+        return count;
+    }
 
-        // Simplified - return dominant script
+    fn getWordScriptRuns(self: *Self, word: []const u8) ![]u8 {
+        var decoded = try decode(self.allocator, word);
+        defer decoded.deinit();
+
+        const runs = try self.script_detector.detectRuns(decoded.cps);
+        defer self.allocator.free(runs);
+
+        // Simplified - return dominant (first) script name.
         if (runs.len > 0) {
             const script_name = @tagName(runs[0].script);
             return try self.allocator.dupe(u8, script_name);
@@ -149,19 +242,20 @@ pub const AdvancedScriptProcessor = struct {
         return try self.allocator.dupe(u8, "Unknown");
     }
 
-    // Enhanced Arabic contextual analysis
+    // Enhanced Arabic contextual analysis.
     pub fn processArabicText(self: *Self, text: []const u8) !ArabicProcessingResult {
         const analyses = try self.analyzeComplexScripts(text);
         defer self.allocator.free(analyses);
 
         var result = ArabicProcessingResult.init(self.allocator);
+        errdefer result.deinit();
 
         var i: usize = 0;
         for (analyses) |analysis| {
             if (analysis.script_category == .joining) {
                 const contextual_form = try self.determineArabicForm(analyses, i);
 
-                try result.contextual_forms.append(ArabicContextualForm{
+                try result.contextual_forms.append(self.allocator, ArabicContextualForm{
                     .base_codepoint = analysis.codepoint,
                     .contextual_codepoint = self.getArabicVariant(analysis.codepoint, contextual_form),
                     .form = contextual_form,
@@ -170,10 +264,10 @@ pub const AdvancedScriptProcessor = struct {
                     .joins_right = self.joinsRight(analysis.joining_type),
                 });
 
-                // Check for ligatures
+                // Check for ligatures.
                 if (i + 1 < analyses.len) {
                     if (self.canFormLigature(analysis.codepoint, analyses[i + 1].codepoint)) |ligature| {
-                        try result.ligatures.append(ArabicLigature{
+                        try result.ligatures.append(self.allocator, ArabicLigature{
                             .components = &[_]u32{ analysis.codepoint, analyses[i + 1].codepoint },
                             .ligature_glyph = ligature,
                             .position = i,
@@ -225,7 +319,7 @@ pub const AdvancedScriptProcessor = struct {
 
     fn getArabicVariant(self: *Self, base: u32, form: ArabicForm) u32 {
         _ = self;
-        // Arabic contextual forms mapping
+        // Arabic contextual forms mapping.
         return switch (base) {
             0x0628 => switch (form) { // BEH
                 .isolated => 0xFE8F,
@@ -245,14 +339,14 @@ pub const AdvancedScriptProcessor = struct {
                 .initial => 0xFE9F,
                 .medial => 0xFEA0,
             },
-            // Add more Arabic characters as needed
+            // Add more Arabic characters as needed.
             else => base,
         };
     }
 
     fn canFormLigature(self: *Self, cp1: u32, cp2: u32) ?u32 {
         _ = self;
-        // Common Arabic ligatures
+        // Common Arabic ligatures.
         return switch ((@as(u64, cp1) << 32) | cp2) {
             (0x0644 << 32) | 0x0627 => 0xFEFB, // LAM + ALEF
             (0x0644 << 32) | 0x0622 => 0xFEF7, // LAM + ALEF WITH MADDA ABOVE
@@ -262,31 +356,32 @@ pub const AdvancedScriptProcessor = struct {
         };
     }
 
-    // Enhanced Indic processing with syllable formation
+    // Enhanced Indic processing with syllable formation.
     pub fn processIndicText(self: *Self, text: []const u8) !IndicProcessingResult {
         const analyses = try self.analyzeComplexScripts(text);
         defer self.allocator.free(analyses);
 
         var result = IndicProcessingResult.init(self.allocator);
+        errdefer result.deinit();
 
-        // Group into syllables
+        // Group into syllables.
         var syllable_start: usize = 0;
         var i: usize = 0;
 
         while (i < analyses.len) {
-            // Find syllable boundary
+            // Find syllable boundary.
             if (self.isIndicSyllableBoundary(analyses, i)) {
                 const syllable = try self.processIndicSyllable(analyses[syllable_start..i]);
-                try result.syllables.append(syllable);
+                try result.syllables.append(self.allocator, syllable);
                 syllable_start = i;
             }
             i += 1;
         }
 
-        // Process final syllable
+        // Process final syllable.
         if (syllable_start < analyses.len) {
             const syllable = try self.processIndicSyllable(analyses[syllable_start..]);
-            try result.syllables.append(syllable);
+            try result.syllables.append(self.allocator, syllable);
         }
 
         return result;
@@ -298,25 +393,26 @@ pub const AdvancedScriptProcessor = struct {
 
         const current = analyses[pos];
         return current.indic_category == .consonant and
-               analyses[pos - 1].indic_category != .virama;
+            analyses[pos - 1].indic_category != .virama;
     }
 
     fn processIndicSyllable(self: *Self, syllable: []ComplexScriptAnalysis) !IndicSyllable {
         var result = IndicSyllable.init(self.allocator);
+        errdefer result.deinit();
 
-        // Classify syllable components
+        // Classify syllable components.
         for (syllable, 0..) |analysis, i| {
             const component = IndicSyllableComponent{
                 .codepoint = analysis.codepoint,
-                .category = analysis.indic_category.?,
+                .category = analysis.indic_category orelse .combining_mark,
                 .position = i,
-                .reorder_class = self.getIndicReorderClass(analysis.indic_category.?),
+                .reorder_class = self.getIndicReorderClass(analysis.indic_category orelse .combining_mark),
             };
 
-            try result.components.append(component);
+            try result.components.append(self.allocator, component);
         }
 
-        // Apply Indic reordering rules
+        // Apply Indic reordering rules.
         try self.applyIndicReordering(&result);
 
         return result;
@@ -336,7 +432,7 @@ pub const AdvancedScriptProcessor = struct {
 
     fn applyIndicReordering(self: *Self, syllable: *IndicSyllable) !void {
         _ = self;
-        // Sort by reorder class
+        // Sort by reorder class.
         std.mem.sort(IndicSyllableComponent, syllable.components.items, {}, indicReorderCompare);
     }
 
@@ -346,7 +442,7 @@ pub const AdvancedScriptProcessor = struct {
     }
 };
 
-// Enhanced data structures with gcode integration
+// Enhanced data structures with gcode integration.
 
 pub const BiDiDirection = enum {
     auto,
@@ -360,13 +456,13 @@ pub const BiDiResult = struct {
 
     pub fn init(allocator: std.mem.Allocator) BiDiResult {
         return BiDiResult{
-            .runs = std.ArrayList(BiDiRun).init(allocator),
+            .runs = std.ArrayList(BiDiRun).empty,
             .allocator = allocator,
         };
     }
 
     pub fn deinit(self: *BiDiResult) void {
-        self.runs.deinit();
+        self.runs.deinit(self.allocator);
     }
 };
 
@@ -376,7 +472,8 @@ pub const BiDiRun = struct {
     length: usize,
     level: u8,
     direction: WritingDirection,
-    visual_order: []usize,
+    // Sequential position in visual order; gcode returns runs already ordered.
+    visual_order: usize,
 };
 
 pub const ScriptRun = struct {
@@ -403,9 +500,12 @@ pub const ComplexScriptAnalysis = struct {
     indic_category: ?IndicCategory,
     display_width: f32,
     combining_class: u8,
-    grapheme_boundary: u8,
-    word_boundary: u8,
-    line_break_class: u8,
+    // gcode's analysis exposes these flags directly; the previous
+    // grapheme/word/line-break class bytes have no source in v0.1.5 and were
+    // replaced with the real shaping-relevant flags.
+    is_mark: bool,
+    is_cluster_start: bool,
+    can_break_line: bool,
 };
 
 pub const WordBoundary = struct {
@@ -425,15 +525,15 @@ pub const ArabicProcessingResult = struct {
 
     pub fn init(allocator: std.mem.Allocator) ArabicProcessingResult {
         return ArabicProcessingResult{
-            .contextual_forms = std.ArrayList(ArabicContextualForm).init(allocator),
-            .ligatures = std.ArrayList(ArabicLigature).init(allocator),
+            .contextual_forms = std.ArrayList(ArabicContextualForm).empty,
+            .ligatures = std.ArrayList(ArabicLigature).empty,
             .allocator = allocator,
         };
     }
 
     pub fn deinit(self: *ArabicProcessingResult) void {
-        self.contextual_forms.deinit();
-        self.ligatures.deinit();
+        self.contextual_forms.deinit(self.allocator);
+        self.ligatures.deinit(self.allocator);
     }
 };
 
@@ -458,7 +558,7 @@ pub const IndicProcessingResult = struct {
 
     pub fn init(allocator: std.mem.Allocator) IndicProcessingResult {
         return IndicProcessingResult{
-            .syllables = std.ArrayList(IndicSyllable).init(allocator),
+            .syllables = std.ArrayList(IndicSyllable).empty,
             .allocator = allocator,
         };
     }
@@ -467,7 +567,7 @@ pub const IndicProcessingResult = struct {
         for (self.syllables.items) |*syllable| {
             syllable.deinit();
         }
-        self.syllables.deinit();
+        self.syllables.deinit(self.allocator);
     }
 };
 
@@ -477,13 +577,13 @@ pub const IndicSyllable = struct {
 
     pub fn init(allocator: std.mem.Allocator) IndicSyllable {
         return IndicSyllable{
-            .components = std.ArrayList(IndicSyllableComponent).init(allocator),
+            .components = std.ArrayList(IndicSyllableComponent).empty,
             .allocator = allocator,
         };
     }
 
     pub fn deinit(self: *IndicSyllable) void {
-        self.components.deinit();
+        self.components.deinit(self.allocator);
     }
 };
 
@@ -494,11 +594,9 @@ pub const IndicSyllableComponent = struct {
     reorder_class: u8,
 };
 
-// Enums and type definitions
+// Enums and type definitions.
 
-pub const ScriptType = enum {
-    latin, arabic, hebrew, devanagari, bengali, tamil, thai, myanmar, khmer, han, hiragana, katakana, hangul, unknown
-};
+pub const ScriptType = enum { latin, arabic, hebrew, devanagari, bengali, tamil, thai, myanmar, khmer, han, hiragana, katakana, hangul, unknown };
 
 pub const WritingDirection = enum { ltr, rtl, ttb };
 
@@ -514,8 +612,8 @@ pub const WordType = enum { alphabetic, numeric, punctuation, whitespace, emoji,
 
 pub const LineBreakClass = enum { mandatory, allowed, prohibited };
 
-// Conversion functions from gcode types
-fn convertGcodeScript(script: gcode.script.Script) ScriptType {
+// Conversion functions from gcode types.
+fn convertGcodeScript(script: gcode.Script) ScriptType {
     return switch (script) {
         .Latin => .latin,
         .Arabic => .arabic,
@@ -534,56 +632,71 @@ fn convertGcodeScript(script: gcode.script.Script) ScriptType {
     };
 }
 
-fn convertScriptCategory(category: gcode.complex_script.ScriptCategory) ScriptCategory {
+fn convertScriptCategory(category: gcode.ComplexScriptCategory) ScriptCategory {
     return switch (category) {
-        .Simple => .simple,
-        .Joining => .joining,
-        .Indic => .indic,
-        .CJK => .cjk,
-        .Combining => .combining,
+        .simple => .simple,
+        .joining => .joining,
+        .indic => .indic,
+        .cjk => .cjk,
+        // gcode exposes more categories than zfont; fold the remainder onto the
+        // closest zfont concept.
+        .southeast_asian => .indic,
+        .other_complex => .combining,
     };
 }
 
-fn convertJoiningType(joining_type: gcode.complex_script.JoiningType) JoiningType {
+fn convertJoiningType(joining_type: gcode.ArabicJoiningType) JoiningType {
     return switch (joining_type) {
-        .None => .none,
-        .JoinCausing => .join_causing,
-        .DualJoining => .dual_joining,
-        .LeftJoining => .left_joining,
-        .RightJoining => .right_joining,
-        .Transparent => .transparent,
+        .U => .none,
+        .C => .join_causing,
+        .D => .dual_joining,
+        .L => .left_joining,
+        .R => .right_joining,
+        .T => .transparent,
     };
 }
 
-fn convertArabicForm(form: gcode.complex_script.ArabicForm) ArabicForm {
+fn convertArabicForm(form: gcode.ArabicForm) ArabicForm {
     return switch (form) {
-        .Isolated => .isolated,
-        .Initial => .initial,
-        .Medial => .medial,
-        .Final => .final,
+        .isolated => .isolated,
+        .initial => .initial,
+        .medial => .medial,
+        .final => .final,
     };
 }
 
-fn convertIndicCategory(category: gcode.complex_script.IndicCategory) IndicCategory {
+fn convertIndicCategory(category: gcode.IndicCategory) IndicCategory {
     return switch (category) {
-        .Consonant => .consonant,
-        .VowelIndependent => .vowel_independent,
-        .VowelDependent => .vowel_dependent,
-        .Nukta => .nukta,
-        .Virama => .virama,
-        .CombiningMark => .combining_mark,
+        .consonant,
+        .consonant_dead,
+        .consonant_with_stacker,
+        .consonant_prefixed,
+        .consonant_preceding_repha,
+        .consonant_succeeding_repha,
+        => .consonant,
+        .vowel_independent => .vowel_independent,
+        .vowel_dependent => .vowel_dependent,
+        .nukta => .nukta,
+        .virama, .invisible_stacker => .virama,
+        else => .combining_mark,
     };
 }
 
-fn convertWordType(word_type: gcode.word.WordType) WordType {
-    return switch (word_type) {
-        .Alphabetic => .alphabetic,
-        .Numeric => .numeric,
-        .Punctuation => .punctuation,
-        .Whitespace => .whitespace,
-        .Emoji => .emoji,
-        else => .other,
-    };
+// gcode's WordIterator yields plain byte segments without a word-type tag, so
+// derive a coarse classification from the segment's leading codepoint.
+fn convertWordType(segment: []const u8) WordType {
+    if (segment.len == 0) return .other;
+    const seq_len = std.unicode.utf8ByteSequenceLength(segment[0]) catch 1;
+    const end = @min(seq_len, segment.len);
+    const cp = std.unicode.utf8Decode(segment[0..end]) catch return .other;
+    if (cp < 0x80) {
+        const byte: u8 = @intCast(cp);
+        if (std.ascii.isAlphabetic(byte)) return .alphabetic;
+        if (std.ascii.isDigit(byte)) return .numeric;
+        if (std.ascii.isWhitespace(byte)) return .whitespace;
+        return .punctuation;
+    }
+    return .alphabetic;
 }
 
 test "AdvancedScriptProcessor Arabic processing" {
@@ -597,7 +710,7 @@ test "AdvancedScriptProcessor Arabic processing" {
     var result = processor.processArabicText(arabic_text) catch return;
     defer result.deinit();
 
-    // Should detect contextual forms
+    // Should detect contextual forms.
     try testing.expect(result.contextual_forms.items.len > 0);
 }
 
@@ -612,6 +725,6 @@ test "AdvancedScriptProcessor Indic processing" {
     var result = processor.processIndicText(devanagari_text) catch return;
     defer result.deinit();
 
-    // Should form syllables
+    // Should form syllables.
     try testing.expect(result.syllables.items.len > 0);
 }

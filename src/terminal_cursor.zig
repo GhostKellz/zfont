@@ -8,9 +8,9 @@ const GraphemeSegmenter = @import("grapheme_segmenter.zig").GraphemeSegmenter;
 // Handles proper cursor movement in BiDi, CJK, Indic, Arabic, and emoji text
 pub const TerminalCursorProcessor = struct {
     allocator: std.mem.Allocator,
-    bidi_processor: gcode.bidi.BiDi,
+    bidi_processor: gcode.BiDi,
     grapheme_segmenter: GraphemeSegmenter,
-    complex_analyzer: gcode.complex_script.ComplexScriptAnalyzer,
+    complex_analyzer: gcode.ComplexScriptAnalyzer,
     east_asian_mode: Unicode.EastAsianWidthMode,
 
     const Self = @This();
@@ -26,7 +26,7 @@ pub const TerminalCursorProcessor = struct {
     };
 
     pub const ScriptContext = struct {
-        script_type: gcode.script.Script,
+        script_type: gcode.Script,
         requires_complex_shaping: bool,
         is_emoji_sequence: bool,
         is_cjk_fullwidth: bool,
@@ -48,17 +48,15 @@ pub const TerminalCursorProcessor = struct {
     pub fn init(allocator: std.mem.Allocator) !Self {
         return Self{
             .allocator = allocator,
-            .bidi_processor = try gcode.bidi.BiDi.init(allocator),
+            .bidi_processor = gcode.BiDi.init(allocator),
             .grapheme_segmenter = GraphemeSegmenter.init(allocator),
-            .complex_analyzer = try gcode.complex_script.ComplexScriptAnalyzer.init(allocator),
+            .complex_analyzer = gcode.ComplexScriptAnalyzer.init(allocator),
             .east_asian_mode = .standard,
         };
     }
 
     pub fn deinit(self: *Self) void {
-        self.bidi_processor.deinit();
         self.grapheme_segmenter.deinit();
-        self.complex_analyzer.deinit();
     }
 
     pub fn setEastAsianWidthMode(self: *Self, mode: Unicode.EastAsianWidthMode) void {
@@ -72,12 +70,33 @@ pub const TerminalCursorProcessor = struct {
         // 1. Grapheme cluster segmentation
         analysis.grapheme_breaks = try self.grapheme_segmenter.segmentText(text);
 
+        // Decode UTF-8 into codepoints; gcode processText/analyzeText expect []const u32.
+        var codepoints = std.ArrayList(u32).empty;
+        defer codepoints.deinit(self.allocator);
+        {
+            var byte_index: usize = 0;
+            while (byte_index < text.len) {
+                const char_len = std.unicode.utf8ByteSequenceLength(text[byte_index]) catch 1;
+                if (byte_index + char_len > text.len) break;
+                const cp = std.unicode.utf8Decode(text[byte_index .. byte_index + char_len]) catch {
+                    byte_index += 1;
+                    continue;
+                };
+                try codepoints.append(self.allocator, cp);
+                byte_index += char_len;
+            }
+        }
+
         // 2. BiDi analysis for RTL/LTR text
-        const bidi_runs = try self.bidi_processor.processText(text, .auto);
+        const base_dir = self.bidi_processor.getBaseDirection(codepoints.items);
+        const bidi_runs = try self.bidi_processor.processText(codepoints.items, base_dir);
+        defer self.allocator.free(bidi_runs);
         analysis.bidi_runs = try self.allocator.dupe(@TypeOf(bidi_runs[0]), bidi_runs);
 
         // 3. Script analysis for complex text
-        analysis.complex_analysis = try self.complex_analyzer.analyzeText(text);
+        analysis.complex_analysis = try self.complex_analyzer.analyzeText(codepoints.items);
+        // Retain the codepoints parallel to the analysis for property recovery.
+        analysis.analysis_codepoints = try self.allocator.dupe(u32, codepoints.items);
 
         // 4. Terminal line wrapping analysis
         analysis.line_breaks = try self.calculateLineBreaks(text, terminal_width);
@@ -90,8 +109,8 @@ pub const TerminalCursorProcessor = struct {
     }
 
     fn calculateLineBreaks(self: *Self, text: []const u8, terminal_width: u32) ![]usize {
-        var line_starts = std.ArrayList(usize).init(self.allocator);
-        try line_starts.append(0);
+        var line_starts = std.ArrayList(usize).empty;
+        try line_starts.append(self.allocator, 0);
 
         var current_width: u32 = 0;
         var iterator = Unicode.codePointIterator(text);
@@ -102,13 +121,13 @@ pub const TerminalCursorProcessor = struct {
 
             if (codepoint == '\n') {
                 const next_start = cp.offset + cp.len;
-                try line_starts.append(next_start);
+                try line_starts.append(self.allocator, next_start);
                 current_width = 0;
                 continue;
             }
 
             if (terminal_width > 0 and current_width + char_width > terminal_width and current_width > 0) {
-                try line_starts.append(cp.offset);
+                try line_starts.append(self.allocator, cp.offset);
                 current_width = char_width;
             } else {
                 current_width += char_width;
@@ -116,10 +135,10 @@ pub const TerminalCursorProcessor = struct {
         }
 
         if (line_starts.items[line_starts.items.len - 1] != text.len) {
-            try line_starts.append(text.len);
+            try line_starts.append(self.allocator, text.len);
         }
 
-        return line_starts.toOwnedSlice();
+        return line_starts.toOwnedSlice(self.allocator);
     }
 
     fn createLogicalToVisualMap(self: *Self, text: []const u8, analysis: *const CursorTextAnalysis) ![]usize {
@@ -132,7 +151,7 @@ pub const TerminalCursorProcessor = struct {
 
         // Apply BiDi reordering
         for (analysis.bidi_runs) |run| {
-            if (run.direction == .rtl) {
+            if (run.direction == .RTL) {
                 // Reverse the mapping for RTL runs
                 const start = run.start;
                 const end = run.start + run.length;
@@ -264,19 +283,20 @@ pub const TerminalCursorProcessor = struct {
     }
 
     fn moveCursorWordLeft(self: *Self, current: CursorPosition, analysis: *const CursorTextAnalysis, text: []const u8) !CursorPosition {
-        // Use gcode word boundary detection
-        const word_boundaries = try gcode.word.WordIterator.init(text);
-        defer self.allocator.free(word_boundaries);
-
+        // Use gcode word boundary detection. WordIterator yields word segments;
+        // track the running byte offset to recover boundary start positions.
+        var iter = gcode.wordIterator(text);
         var new_pos = current;
+        var offset: usize = 0;
 
-        // Find previous word boundary
-        for (word_boundaries) |boundary| {
-            if (boundary.start < current.logical_index) {
-                new_pos.logical_index = boundary.start;
+        // Find the last word-start strictly before the current logical index.
+        while (iter.next()) |segment| {
+            if (offset < current.logical_index) {
+                new_pos.logical_index = offset;
             } else {
                 break;
             }
+            offset += segment.len;
         }
 
         try self.updateTerminalCoordinates(&new_pos, analysis, text);
@@ -288,18 +308,20 @@ pub const TerminalCursorProcessor = struct {
     }
 
     fn moveCursorWordRight(self: *Self, current: CursorPosition, analysis: *const CursorTextAnalysis, text: []const u8) !CursorPosition {
-        // Use gcode word boundary detection
-        const word_boundaries = try gcode.word.WordIterator.init(text);
-        defer self.allocator.free(word_boundaries);
-
+        // Use gcode word boundary detection. WordIterator yields word segments;
+        // track the running byte offset to recover boundary end positions.
+        var iter = gcode.wordIterator(text);
         var new_pos = current;
+        var offset: usize = 0;
 
-        // Find next word boundary
-        for (word_boundaries) |boundary| {
-            if (boundary.end > current.logical_index) {
-                new_pos.logical_index = boundary.end;
+        // Find the first word-end strictly after the current logical index.
+        while (iter.next()) |segment| {
+            const end = offset + segment.len;
+            if (end > current.logical_index) {
+                new_pos.logical_index = end;
                 break;
             }
+            offset = end;
         }
 
         try self.updateTerminalCoordinates(&new_pos, analysis, text);
@@ -467,7 +489,7 @@ pub const TerminalCursorProcessor = struct {
     fn getScriptContext(_: *Self, logical_index: usize, analysis: *const CursorTextAnalysis) !ScriptContext {
         if (logical_index >= analysis.complex_analysis.len) {
             return ScriptContext{
-                .script_type = .latin,
+                .script_type = .Latin,
                 .requires_complex_shaping = false,
                 .is_emoji_sequence = false,
                 .is_cjk_fullwidth = false,
@@ -476,11 +498,21 @@ pub const TerminalCursorProcessor = struct {
 
         const char_analysis = analysis.complex_analysis[logical_index];
 
+        // gcode's ComplexScriptAnalysis exposes width via cjk_width and shaping via
+        // needsComplexShaping(). It does not carry the source codepoint or an emoji
+        // flag, so emoji detection is derived from the per-codepoint grapheme
+        // property below using the stored codepoint mirror.
+        const is_fullwidth = if (char_analysis.cjk_width) |w| w == .wide else false;
+        const is_emoji = if (logical_index < analysis.analysis_codepoints.len)
+            gcode.getProperties(@intCast(analysis.analysis_codepoints[logical_index])).grapheme_boundary_class.isExtendedPictographic()
+        else
+            false;
+
         return ScriptContext{
             .script_type = char_analysis.script,
-            .requires_complex_shaping = char_analysis.requires_complex_shaping,
-            .is_emoji_sequence = char_analysis.is_emoji,
-            .is_cjk_fullwidth = char_analysis.is_fullwidth,
+            .requires_complex_shaping = char_analysis.needsComplexShaping(),
+            .is_emoji_sequence = is_emoji,
+            .is_cjk_fullwidth = is_fullwidth,
         };
     }
 
@@ -514,7 +546,7 @@ pub const TerminalCursorProcessor = struct {
 
             for (movements) |movement| {
                 pos = try self.moveCursor(pos, movement, &analysis, text);
-                std.log.info("  After {}: logical={}, visual={}, line={}, col={}", .{ @tagName(movement), pos.logical_index, pos.visual_index, pos.line, pos.column });
+                std.log.info("  After {s}: logical={}, visual={}, line={}, col={}", .{ @tagName(movement), pos.logical_index, pos.visual_index, pos.line, pos.column });
             }
         }
     }
@@ -522,8 +554,12 @@ pub const TerminalCursorProcessor = struct {
 
 pub const CursorTextAnalysis = struct {
     grapheme_breaks: []usize,
-    bidi_runs: []gcode.bidi.BiDiRun,
-    complex_analysis: []gcode.complex_script.ComplexScriptAnalysis,
+    bidi_runs: []gcode.Run,
+    complex_analysis: []gcode.ComplexScriptAnalysis,
+    // Codepoints parallel to complex_analysis (same index space). gcode's
+    // ComplexScriptAnalysis omits the source codepoint, so we retain it here to
+    // recover per-character properties (e.g. emoji classification).
+    analysis_codepoints: []u32,
     line_breaks: []usize,
     logical_to_visual: []usize,
     visual_to_logical: []usize,
@@ -532,8 +568,9 @@ pub const CursorTextAnalysis = struct {
     pub fn init(allocator: std.mem.Allocator) CursorTextAnalysis {
         return CursorTextAnalysis{
             .grapheme_breaks = &[_]usize{},
-            .bidi_runs = &[_]gcode.bidi.BiDiRun{},
-            .complex_analysis = &[_]gcode.complex_script.ComplexScriptAnalysis{},
+            .bidi_runs = &[_]gcode.Run{},
+            .complex_analysis = &[_]gcode.ComplexScriptAnalysis{},
+            .analysis_codepoints = &[_]u32{},
             .line_breaks = &[_]usize{},
             .logical_to_visual = &[_]usize{},
             .visual_to_logical = &[_]usize{},
@@ -545,6 +582,7 @@ pub const CursorTextAnalysis = struct {
         self.allocator.free(self.grapheme_breaks);
         self.allocator.free(self.bidi_runs);
         self.allocator.free(self.complex_analysis);
+        self.allocator.free(self.analysis_codepoints);
         self.allocator.free(self.line_breaks);
         self.allocator.free(self.logical_to_visual);
         self.allocator.free(self.visual_to_logical);

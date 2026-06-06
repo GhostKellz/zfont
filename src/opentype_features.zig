@@ -37,7 +37,9 @@ pub const OpenTypeFeatureEngine = struct {
                 };
             }
 
-            pub fn deinit(self: *ScriptList) void {
+            pub fn deinit(self: *ScriptList, allocator: std.mem.Allocator) void {
+                var iter = self.scripts.valueIterator();
+                while (iter.next()) |script| script.deinit(allocator);
                 self.scripts.deinit();
             }
         };
@@ -62,7 +64,9 @@ pub const OpenTypeFeatureEngine = struct {
                 };
             }
 
-            pub fn deinit(self: *FeatureList) void {
+            pub fn deinit(self: *FeatureList, allocator: std.mem.Allocator) void {
+                var iter = self.features.valueIterator();
+                while (iter.next()) |feature| feature.deinit(allocator);
                 self.features.deinit();
             }
         };
@@ -71,13 +75,15 @@ pub const OpenTypeFeatureEngine = struct {
             lookups: std.ArrayList(Lookup),
 
             pub fn init(allocator: std.mem.Allocator) LookupList {
+                _ = allocator;
                 return LookupList{
-                    .lookups = std.ArrayList(Lookup).init(allocator),
+                    .lookups = std.ArrayList(Lookup).empty,
                 };
             }
 
-            pub fn deinit(self: *LookupList) void {
-                self.lookups.deinit();
+            pub fn deinit(self: *LookupList, allocator: std.mem.Allocator) void {
+                for (self.lookups.items) |*lookup| lookup.deinit(allocator);
+                self.lookups.deinit(allocator);
             }
         };
 
@@ -90,10 +96,10 @@ pub const OpenTypeFeatureEngine = struct {
             };
         }
 
-        pub fn deinit(self: *GSUBTable) void {
-            self.script_list.deinit();
-            self.feature_list.deinit();
-            self.lookup_list.deinit();
+        pub fn deinit(self: *GSUBTable, allocator: std.mem.Allocator) void {
+            self.script_list.deinit(allocator);
+            self.feature_list.deinit(allocator);
+            self.lookup_list.deinit(allocator);
         }
     };
 
@@ -112,10 +118,10 @@ pub const OpenTypeFeatureEngine = struct {
             };
         }
 
-        pub fn deinit(self: *GPOSTable) void {
-            self.script_list.deinit();
-            self.feature_list.deinit();
-            self.lookup_list.deinit();
+        pub fn deinit(self: *GPOSTable, allocator: std.mem.Allocator) void {
+            self.script_list.deinit(allocator);
+            self.feature_list.deinit(allocator);
+            self.lookup_list.deinit(allocator);
         }
     };
 
@@ -223,14 +229,17 @@ pub const OpenTypeFeatureEngine = struct {
         lang_sys_records: std.ArrayList(LangSysRecord),
 
         pub fn init(allocator: std.mem.Allocator) Script {
+            _ = allocator;
             return Script{
                 .default_lang_sys = null,
-                .lang_sys_records = std.ArrayList(LangSysRecord).init(allocator),
+                .lang_sys_records = std.ArrayList(LangSysRecord).empty,
             };
         }
 
-        pub fn deinit(self: *Script) void {
-            self.lang_sys_records.deinit();
+        pub fn deinit(self: *Script, allocator: std.mem.Allocator) void {
+            if (self.default_lang_sys) |*lang_sys| lang_sys.deinit(allocator);
+            for (self.lang_sys_records.items) |*record| record.lang_sys.deinit(allocator);
+            self.lang_sys_records.deinit(allocator);
         }
     };
 
@@ -240,15 +249,16 @@ pub const OpenTypeFeatureEngine = struct {
         feature_indices: std.ArrayList(u16),
 
         pub fn init(allocator: std.mem.Allocator) LanguageSystem {
+            _ = allocator;
             return LanguageSystem{
                 .lookup_order = null,
                 .required_feature_index = 0xFFFF,
-                .feature_indices = std.ArrayList(u16).init(allocator),
+                .feature_indices = std.ArrayList(u16).empty,
             };
         }
 
-        pub fn deinit(self: *LanguageSystem) void {
-            self.feature_indices.deinit();
+        pub fn deinit(self: *LanguageSystem, allocator: std.mem.Allocator) void {
+            self.feature_indices.deinit(allocator);
         }
     };
 
@@ -262,14 +272,15 @@ pub const OpenTypeFeatureEngine = struct {
         lookup_indices: std.ArrayList(u16),
 
         pub fn init(allocator: std.mem.Allocator) Feature {
+            _ = allocator;
             return Feature{
                 .feature_params = null,
-                .lookup_indices = std.ArrayList(u16).init(allocator),
+                .lookup_indices = std.ArrayList(u16).empty,
             };
         }
 
-        pub fn deinit(self: *Feature) void {
-            self.lookup_indices.deinit();
+        pub fn deinit(self: *Feature, allocator: std.mem.Allocator) void {
+            self.lookup_indices.deinit(allocator);
         }
     };
 
@@ -280,15 +291,16 @@ pub const OpenTypeFeatureEngine = struct {
         mark_filtering_set: ?u16 = null,
 
         pub fn init(allocator: std.mem.Allocator) Lookup {
+            _ = allocator;
             return Lookup{
                 .lookup_type = 0,
                 .lookup_flag = 0,
-                .subtables = std.ArrayList(SubTable).init(allocator),
+                .subtables = std.ArrayList(SubTable).empty,
             };
         }
 
-        pub fn deinit(self: *Lookup) void {
-            self.subtables.deinit();
+        pub fn deinit(self: *Lookup, allocator: std.mem.Allocator) void {
+            self.subtables.deinit(allocator);
         }
     };
 
@@ -324,13 +336,13 @@ pub const OpenTypeFeatureEngine = struct {
             return SingleSubstitution{
                 .format = 1,
                 .coverage = Coverage.init(allocator),
-                .substitutes = std.ArrayList(u16).init(allocator),
+                .substitutes = std.ArrayList(u16).empty,
             };
         }
 
-        pub fn deinit(self: *SingleSubstitution) void {
-            self.coverage.deinit();
-            self.substitutes.deinit();
+        pub fn deinit(self: *SingleSubstitution, allocator: std.mem.Allocator) void {
+            self.coverage.deinit(allocator);
+            self.substitutes.deinit(allocator);
         }
     };
 
@@ -343,16 +355,16 @@ pub const OpenTypeFeatureEngine = struct {
             return MultipleSubstitution{
                 .format = 1,
                 .coverage = Coverage.init(allocator),
-                .sequences = std.ArrayList(std.ArrayList(u16)).init(allocator),
+                .sequences = std.ArrayList(std.ArrayList(u16)).empty,
             };
         }
 
-        pub fn deinit(self: *MultipleSubstitution) void {
-            self.coverage.deinit();
+        pub fn deinit(self: *MultipleSubstitution, allocator: std.mem.Allocator) void {
+            self.coverage.deinit(allocator);
             for (self.sequences.items) |*seq| {
-                seq.deinit();
+                seq.deinit(allocator);
             }
-            self.sequences.deinit();
+            self.sequences.deinit(allocator);
         }
     };
 
@@ -365,16 +377,16 @@ pub const OpenTypeFeatureEngine = struct {
             return AlternateSubstitution{
                 .format = 1,
                 .coverage = Coverage.init(allocator),
-                .alternate_sets = std.ArrayList(std.ArrayList(u16)).init(allocator),
+                .alternate_sets = std.ArrayList(std.ArrayList(u16)).empty,
             };
         }
 
-        pub fn deinit(self: *AlternateSubstitution) void {
-            self.coverage.deinit();
+        pub fn deinit(self: *AlternateSubstitution, allocator: std.mem.Allocator) void {
+            self.coverage.deinit(allocator);
             for (self.alternate_sets.items) |*set| {
-                set.deinit();
+                set.deinit(allocator);
             }
-            self.alternate_sets.deinit();
+            self.alternate_sets.deinit(allocator);
         }
     };
 
@@ -387,16 +399,17 @@ pub const OpenTypeFeatureEngine = struct {
             ligatures: std.ArrayList(Ligature),
 
             pub fn init(allocator: std.mem.Allocator) LigatureSet {
+                _ = allocator;
                 return LigatureSet{
-                    .ligatures = std.ArrayList(Ligature).init(allocator),
+                    .ligatures = std.ArrayList(Ligature).empty,
                 };
             }
 
-            pub fn deinit(self: *LigatureSet) void {
+            pub fn deinit(self: *LigatureSet, allocator: std.mem.Allocator) void {
                 for (self.ligatures.items) |*lig| {
-                    lig.deinit();
+                    lig.deinit(allocator);
                 }
-                self.ligatures.deinit();
+                self.ligatures.deinit(allocator);
             }
         };
 
@@ -405,14 +418,15 @@ pub const OpenTypeFeatureEngine = struct {
             component_glyphs: std.ArrayList(u16),
 
             pub fn init(allocator: std.mem.Allocator) Ligature {
+                _ = allocator;
                 return Ligature{
                     .ligature_glyph = 0,
-                    .component_glyphs = std.ArrayList(u16).init(allocator),
+                    .component_glyphs = std.ArrayList(u16).empty,
                 };
             }
 
-            pub fn deinit(self: *Ligature) void {
-                self.component_glyphs.deinit();
+            pub fn deinit(self: *Ligature, allocator: std.mem.Allocator) void {
+                self.component_glyphs.deinit(allocator);
             }
         };
 
@@ -420,16 +434,16 @@ pub const OpenTypeFeatureEngine = struct {
             return LigatureSubstitution{
                 .format = 1,
                 .coverage = Coverage.init(allocator),
-                .ligature_sets = std.ArrayList(LigatureSet).init(allocator),
+                .ligature_sets = std.ArrayList(LigatureSet).empty,
             };
         }
 
-        pub fn deinit(self: *LigatureSubstitution) void {
-            self.coverage.deinit();
+        pub fn deinit(self: *LigatureSubstitution, allocator: std.mem.Allocator) void {
+            self.coverage.deinit(allocator);
             for (self.ligature_sets.items) |*set| {
-                set.deinit();
+                set.deinit(allocator);
             }
-            self.ligature_sets.deinit();
+            self.ligature_sets.deinit(allocator);
         }
     };
 
@@ -477,13 +491,13 @@ pub const OpenTypeFeatureEngine = struct {
             return SinglePositioning{
                 .format = 1,
                 .coverage = Coverage.init(allocator),
-                .value_records = std.ArrayList(ValueRecord).init(allocator),
+                .value_records = std.ArrayList(ValueRecord).empty,
             };
         }
 
-        pub fn deinit(self: *SinglePositioning) void {
-            self.coverage.deinit();
-            self.value_records.deinit();
+        pub fn deinit(self: *SinglePositioning, allocator: std.mem.Allocator) void {
+            self.coverage.deinit(allocator);
+            self.value_records.deinit(allocator);
         }
     };
 
@@ -496,13 +510,14 @@ pub const OpenTypeFeatureEngine = struct {
             pair_value_records: std.ArrayList(PairValueRecord),
 
             pub fn init(allocator: std.mem.Allocator) PairSet {
+                _ = allocator;
                 return PairSet{
-                    .pair_value_records = std.ArrayList(PairValueRecord).init(allocator),
+                    .pair_value_records = std.ArrayList(PairValueRecord).empty,
                 };
             }
 
-            pub fn deinit(self: *PairSet) void {
-                self.pair_value_records.deinit();
+            pub fn deinit(self: *PairSet, allocator: std.mem.Allocator) void {
+                self.pair_value_records.deinit(allocator);
             }
         };
 
@@ -516,16 +531,16 @@ pub const OpenTypeFeatureEngine = struct {
             return PairPositioning{
                 .format = 1,
                 .coverage = Coverage.init(allocator),
-                .pair_sets = std.ArrayList(PairSet).init(allocator),
+                .pair_sets = std.ArrayList(PairSet).empty,
             };
         }
 
-        pub fn deinit(self: *PairPositioning) void {
-            self.coverage.deinit();
+        pub fn deinit(self: *PairPositioning, allocator: std.mem.Allocator) void {
+            self.coverage.deinit(allocator);
             for (self.pair_sets.items) |*set| {
-                set.deinit();
+                set.deinit(allocator);
             }
-            self.pair_sets.deinit();
+            self.pair_sets.deinit(allocator);
         }
     };
 
@@ -542,13 +557,14 @@ pub const OpenTypeFeatureEngine = struct {
         glyphs: std.ArrayList(u16),
 
         pub fn init(allocator: std.mem.Allocator) Coverage {
+            _ = allocator;
             return Coverage{
-                .glyphs = std.ArrayList(u16).init(allocator),
+                .glyphs = std.ArrayList(u16).empty,
             };
         }
 
-        pub fn deinit(self: *Coverage) void {
-            self.glyphs.deinit();
+        pub fn deinit(self: *Coverage, allocator: std.mem.Allocator) void {
+            self.glyphs.deinit(allocator);
         }
 
         pub fn contains(self: *const Coverage, glyph_id: u16) bool {
@@ -573,8 +589,8 @@ pub const OpenTypeFeatureEngine = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        if (self.gsub_table) |*gsub| gsub.deinit();
-        if (self.gpos_table) |*gpos| gpos.deinit();
+        if (self.gsub_table) |*gsub| gsub.deinit(self.allocator);
+        if (self.gpos_table) |*gpos| gpos.deinit(self.allocator);
     }
 
     pub fn loadGSUB(self: *Self) !void {
@@ -585,29 +601,29 @@ pub const OpenTypeFeatureEngine = struct {
         var default_lang_sys = LanguageSystem.init(self.allocator);
 
         // Add feature indices for common features
-        try default_lang_sys.feature_indices.append(0); // kern
-        try default_lang_sys.feature_indices.append(1); // liga
+        try default_lang_sys.feature_indices.append(self.allocator, 0); // kern
+        try default_lang_sys.feature_indices.append(self.allocator, 1); // liga
 
         latin_script.default_lang_sys = default_lang_sys;
         try gsub.script_list.scripts.put(.latn, latin_script);
 
         // Add features
         var kern_feature = Feature.init(self.allocator);
-        try kern_feature.lookup_indices.append(0);
+        try kern_feature.lookup_indices.append(self.allocator, 0);
         try gsub.feature_list.features.put(.kern, kern_feature);
 
         var liga_feature = Feature.init(self.allocator);
-        try liga_feature.lookup_indices.append(1);
+        try liga_feature.lookup_indices.append(self.allocator, 1);
         try gsub.feature_list.features.put(.liga, liga_feature);
 
         // Add lookups (simplified)
         var kern_lookup = Lookup.init(self.allocator);
         kern_lookup.lookup_type = 2; // Pair adjustment
-        try gsub.lookup_list.lookups.append(kern_lookup);
+        try gsub.lookup_list.lookups.append(self.allocator, kern_lookup);
 
         var liga_lookup = Lookup.init(self.allocator);
         liga_lookup.lookup_type = 4; // Ligature substitution
-        try gsub.lookup_list.lookups.append(liga_lookup);
+        try gsub.lookup_list.lookups.append(self.allocator, liga_lookup);
 
         self.gsub_table = gsub;
     }
@@ -637,18 +653,18 @@ pub const OpenTypeFeatureEngine = struct {
 
     // Get available features for a script
     pub fn getAvailableFeatures(self: *const Self, script: ScriptTag, allocator: std.mem.Allocator) ![]FeatureTag {
-        var features = std.ArrayList(FeatureTag).init(allocator);
+        var features = std.ArrayList(FeatureTag).empty;
 
         if (self.gsub_table) |*gsub| {
             if (gsub.script_list.scripts.get(script)) |_| {
                 var iter = gsub.feature_list.features.iterator();
                 while (iter.next()) |entry| {
-                    try features.append(entry.key_ptr.*);
+                    try features.append(allocator, entry.key_ptr.*);
                 }
             }
         }
 
-        return features.toOwnedSlice();
+        return features.toOwnedSlice(allocator);
     }
 };
 
@@ -664,7 +680,7 @@ pub const FeatureManager = struct {
         var manager = Self{
             .allocator = allocator,
             .engine = OpenTypeFeatureEngine.init(allocator),
-            .active_features = std.ArrayList(OpenTypeFeatureEngine.FeatureTag).init(allocator),
+            .active_features = std.ArrayList(OpenTypeFeatureEngine.FeatureTag).empty,
         };
 
         // Load default tables
@@ -680,7 +696,7 @@ pub const FeatureManager = struct {
 
     pub fn deinit(self: *Self) void {
         self.engine.deinit();
-        self.active_features.deinit();
+        self.active_features.deinit(self.allocator);
     }
 
     pub fn enableFeature(self: *Self, feature: OpenTypeFeatureEngine.FeatureTag) !void {
@@ -688,7 +704,7 @@ pub const FeatureManager = struct {
         for (self.active_features.items) |existing| {
             if (existing == feature) return;
         }
-        try self.active_features.append(feature);
+        try self.active_features.append(self.allocator, feature);
     }
 
     pub fn disableFeature(self: *Self, feature: OpenTypeFeatureEngine.FeatureTag) void {
@@ -719,33 +735,33 @@ pub const FeatureManager = struct {
         self.active_features.clearRetainingCapacity();
 
         // Programming-focused features
-        try self.enableFeature(.liga);  // Code ligatures
-        try self.enableFeature(.clig);  // Contextual ligatures
-        try self.enableFeature(.zero);  // Slashed zero
-        try self.enableFeature(.ss01);  // Stylistic set 1 (often alternative a)
-        try self.enableFeature(.cv01);  // Character variant 1
+        try self.enableFeature(.liga); // Code ligatures
+        try self.enableFeature(.clig); // Contextual ligatures
+        try self.enableFeature(.zero); // Slashed zero
+        try self.enableFeature(.ss01); // Stylistic set 1 (often alternative a)
+        try self.enableFeature(.cv01); // Character variant 1
     }
 
     pub fn configureForReading(self: *Self) !void {
         self.active_features.clearRetainingCapacity();
 
         // Reading-focused features
-        try self.enableFeature(.kern);  // Kerning
-        try self.enableFeature(.liga);  // Standard ligatures
-        try self.enableFeature(.onum);  // Old-style figures
-        try self.enableFeature(.smcp);  // Small caps
+        try self.enableFeature(.kern); // Kerning
+        try self.enableFeature(.liga); // Standard ligatures
+        try self.enableFeature(.onum); // Old-style figures
+        try self.enableFeature(.smcp); // Small caps
     }
 
     pub fn configureForMath(self: *Self) !void {
         self.active_features.clearRetainingCapacity();
 
         // Math-focused features
-        try self.enableFeature(.kern);  // Kerning
-        try self.enableFeature(.frac);  // Fractions
-        try self.enableFeature(.sups);  // Superscripts
-        try self.enableFeature(.subs);  // Subscripts
-        try self.enableFeature(.lnum);  // Lining figures
-        try self.enableFeature(.tnum);  // Tabular figures
+        try self.enableFeature(.kern); // Kerning
+        try self.enableFeature(.frac); // Fractions
+        try self.enableFeature(.sups); // Superscripts
+        try self.enableFeature(.subs); // Subscripts
+        try self.enableFeature(.lnum); // Lining figures
+        try self.enableFeature(.tnum); // Tabular figures
     }
 };
 

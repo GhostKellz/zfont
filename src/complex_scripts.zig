@@ -36,7 +36,7 @@ pub const ComplexScriptProcessor = struct {
         while (i < text.len) {
             const char_len = std.unicode.utf8ByteSequenceLength(text[i]) catch 1;
             if (i + char_len <= text.len) {
-                const codepoint = std.unicode.utf8Decode(text[i..i + char_len]) catch {
+                const codepoint = std.unicode.utf8Decode(text[i .. i + char_len]) catch {
                     i += 1;
                     continue;
                 };
@@ -74,8 +74,8 @@ pub const ComplexScriptProcessor = struct {
         _ = self;
         // Arabic joining characters (simplified)
         return (codepoint >= 0x0627 and codepoint <= 0x06EF) or
-               (codepoint >= 0xFB50 and codepoint <= 0xFDFF) or
-               (codepoint >= 0xFE70 and codepoint <= 0xFEFF);
+            (codepoint >= 0xFB50 and codepoint <= 0xFDFF) or
+            (codepoint >= 0xFE70 and codepoint <= 0xFEFF);
     }
 
     fn applyArabicShaping(self: *Self, codepoint: u32, form: ArabicForm) u32 {
@@ -135,7 +135,7 @@ pub const ComplexScriptProcessor = struct {
         while (i < text.len) {
             const char_len = std.unicode.utf8ByteSequenceLength(text[i]) catch 1;
             if (i + char_len <= text.len) {
-                const codepoint = std.unicode.utf8Decode(text[i..i + char_len]) catch {
+                const codepoint = std.unicode.utf8Decode(text[i .. i + char_len]) catch {
                     i += 1;
                     continue;
                 };
@@ -175,10 +175,10 @@ pub const ComplexScriptProcessor = struct {
 
                 // Remove Ra + Halant
                 _ = processed.chars.orderedRemove(i + 1); // Remove Halant
-                _ = processed.chars.orderedRemove(i);     // Remove Ra
+                _ = processed.chars.orderedRemove(i); // Remove Ra
 
                 // Insert Reph at syllable end
-                try processed.chars.insert(syllable_end - 2, reph_char);
+                try processed.chars.insert(self.allocator, syllable_end - 2, reph_char);
                 continue;
             }
 
@@ -257,7 +257,7 @@ pub const ComplexScriptProcessor = struct {
         while (i < text.len) {
             const char_len = std.unicode.utf8ByteSequenceLength(text[i]) catch 1;
             if (i + char_len <= text.len) {
-                const codepoint = std.unicode.utf8Decode(text[i..i + char_len]) catch {
+                const codepoint = std.unicode.utf8Decode(text[i .. i + char_len]) catch {
                     i += 1;
                     continue;
                 };
@@ -290,7 +290,7 @@ pub const ComplexScriptProcessor = struct {
         while (i < text.len) {
             const char_len = std.unicode.utf8ByteSequenceLength(text[i]) catch 1;
             if (i + char_len <= text.len) {
-                const codepoint = std.unicode.utf8Decode(text[i..i + char_len]) catch {
+                const codepoint = std.unicode.utf8Decode(text[i .. i + char_len]) catch {
                     i += 1;
                     continue;
                 };
@@ -313,7 +313,7 @@ pub const ComplexScriptProcessor = struct {
         while (i < text.len) {
             const char_len = std.unicode.utf8ByteSequenceLength(text[i]) catch 1;
             if (i + char_len <= text.len) {
-                const codepoint = std.unicode.utf8Decode(text[i..i + char_len]) catch {
+                const codepoint = std.unicode.utf8Decode(text[i .. i + char_len]) catch {
                     i += 1;
                     continue;
                 };
@@ -344,7 +344,7 @@ pub const ComplexScriptProcessor = struct {
         while (i < text.len) {
             const char_len = std.unicode.utf8ByteSequenceLength(text[i]) catch 1;
             if (i + char_len <= text.len) {
-                const codepoint = std.unicode.utf8Decode(text[i..i + char_len]) catch {
+                const codepoint = std.unicode.utf8Decode(text[i .. i + char_len]) catch {
                     i += 1;
                     continue;
                 };
@@ -374,7 +374,7 @@ pub const ComplexScriptProcessor = struct {
         while (i < text.len) {
             const char_len = std.unicode.utf8ByteSequenceLength(text[i]) catch 1;
             if (i + char_len <= text.len) {
-                const codepoint = std.unicode.utf8Decode(text[i..i + char_len]) catch {
+                const codepoint = std.unicode.utf8Decode(text[i .. i + char_len]) catch {
                     i += 1;
                     continue;
                 };
@@ -414,7 +414,7 @@ pub const ComplexScriptProcessor = struct {
 
         const next_char_len = std.unicode.utf8ByteSequenceLength(text[next_pos]) catch return 0;
         if (next_pos + next_char_len <= text.len) {
-            return std.unicode.utf8Decode(text[next_pos..next_pos + next_char_len]) catch 0;
+            return std.unicode.utf8Decode(text[next_pos .. next_pos + next_char_len]) catch 0;
         }
         return 0;
     }
@@ -457,17 +457,17 @@ pub const ProcessedText = struct {
 
     pub fn init(allocator: std.mem.Allocator) ProcessedText {
         return ProcessedText{
-            .chars = std.ArrayList(ProcessedChar).init(allocator),
+            .chars = std.ArrayList(ProcessedChar).empty,
             .allocator = allocator,
         };
     }
 
     pub fn deinit(self: *ProcessedText) void {
-        self.chars.deinit();
+        self.chars.deinit(self.allocator);
     }
 
     pub fn addChar(self: *ProcessedText, codepoint: u32, direction: Direction) !void {
-        try self.chars.append(ProcessedChar{
+        try self.chars.append(self.allocator, ProcessedChar{
             .codepoint = codepoint,
             .direction = direction,
         });
@@ -482,7 +482,7 @@ pub const ScriptDetector = struct {
         while (i < text.len) {
             const char_len = std.unicode.utf8ByteSequenceLength(text[i]) catch 1;
             if (i + char_len <= text.len) {
-                const codepoint = std.unicode.utf8Decode(text[i..i + char_len]) catch {
+                const codepoint = std.unicode.utf8Decode(text[i .. i + char_len]) catch {
                     i += 1;
                     continue;
                 };
@@ -509,8 +509,7 @@ test "ComplexScriptProcessor Arabic processing" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    var unicode = @import("unicode.zig").Unicode.init(allocator);
-    defer unicode.deinit();
+    var unicode = @import("unicode.zig").Unicode{};
 
     var processor = ComplexScriptProcessor.init(allocator, &unicode);
 

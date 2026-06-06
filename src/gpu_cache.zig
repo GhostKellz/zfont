@@ -92,11 +92,17 @@ pub const GPUCache = struct {
     fn detectNVIDIAOptimizations() bool {
         // Detect NVIDIA GPU for special optimizations
         // This is a simplified check - would use proper GPU detection in production
-        const gpu_vendor = std.process.getEnvVarOwned(std.heap.page_allocator, "GPU_VENDOR") catch "unknown";
-        defer std.heap.page_allocator.free(gpu_vendor);
+        const gpu_vendor = std.Io.Threaded.global_single_threaded.environ.process_environ.getPosix("GPU_VENDOR") orelse "unknown";
 
-        return std.mem.eql(u8, gpu_vendor, "nvidia") or
-            std.mem.indexOf(u8, std.mem.toLower(std.heap.page_allocator, gpu_vendor) catch "unknown", "nvidia") != null;
+        if (std.mem.eql(u8, gpu_vendor, "nvidia")) return true;
+
+        var lower_buf: [256]u8 = undefined;
+        if (gpu_vendor.len <= lower_buf.len) {
+            const lowered = std.ascii.lowerString(lower_buf[0..gpu_vendor.len], gpu_vendor);
+            return std.mem.indexOf(u8, lowered, "nvidia") != null;
+        }
+
+        return false;
     }
 
     fn initializeAtlas(self: *Self) !void {
@@ -206,7 +212,7 @@ pub const GPUCache = struct {
         }
 
         // Render glyph to bitmap
-        const glyph = try font.renderGlyph(glyph_id, size, .{});
+        const glyph = try font.getGlyph(glyph_id, size);
 
         // Find space in atlas
         const atlas_pos = try self.findAtlasSpace(glyph.width, glyph.height);
@@ -221,7 +227,7 @@ pub const GPUCache = struct {
             .height = glyph.height,
             .bearing_x = glyph.bearing_x,
             .bearing_y = glyph.bearing_y,
-            .advance = glyph.advance_x,
+            .advance = glyph.advance_width,
             .gpu_uploaded = false,
         };
 
@@ -286,6 +292,7 @@ pub const GPUCache = struct {
         if (self.atlas_texture == null) return error.AtlasNotInitialized;
 
         const atlas = &self.atlas_texture.?;
+        const bitmap = glyph.bitmap orelse return;
 
         // Copy glyph bitmap to atlas (assuming grayscale to RGBA conversion)
         for (0..glyph.height) |y| {
@@ -293,8 +300,8 @@ pub const GPUCache = struct {
                 const src_idx = y * glyph.width + x;
                 const dst_idx = ((pos.y + @as(u32, @intCast(y))) * atlas.width + (pos.x + @as(u32, @intCast(x)))) * 4;
 
-                if (dst_idx + 3 < atlas.data.len and src_idx < glyph.bitmap.len) {
-                    const alpha = glyph.bitmap[src_idx];
+                if (dst_idx + 3 < atlas.data.len and src_idx < bitmap.len) {
+                    const alpha = bitmap[src_idx];
                     atlas.data[dst_idx + 0] = 255; // R
                     atlas.data[dst_idx + 1] = 255; // G
                     atlas.data[dst_idx + 2] = 255; // B
@@ -471,8 +478,9 @@ test "Cache key generation" {
     var cache = try GPUCache.init(allocator);
     defer cache.deinit();
 
-    // Mock font pointer
-    var dummy_font: u32 = 0x12345678;
+    // Mock font pointer. generateCacheKey only hashes the pointer value and
+    // never dereferences it, but the cast still requires Font's alignment.
+    var dummy_font: u32 align(@alignOf(Font)) = 0x12345678;
     const font_ptr: *Font = @ptrCast(&dummy_font);
 
     const key1 = cache.generateCacheKey(font_ptr, 65, 12.0); // 'A' at 12pt

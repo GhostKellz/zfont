@@ -67,7 +67,8 @@ pub const Glyph = struct {
             for (0..self.width) |x| {
                 const index = y * self.width + x;
                 if (x < border or x >= self.width - border or
-                    y < border or y >= self.height - border) {
+                    y < border or y >= self.height - border)
+                {
                     bitmap[index] = 255; // Border
                 } else {
                     bitmap[index] = 0; // Interior

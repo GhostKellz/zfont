@@ -29,8 +29,8 @@ pub const HintingEngine = struct {
         pub fn eql(self: @This(), a: HintKey, b: HintKey) bool {
             _ = self;
             return a.glyph_index == b.glyph_index and
-                   a.size == b.size and
-                   a.dpi == b.dpi;
+                a.size == b.size and
+                a.dpi == b.dpi;
         }
     };
 
@@ -74,7 +74,7 @@ pub const HintingEngine = struct {
     }
 
     pub fn applyHints(self: *Self, glyph: *Glyph.Glyph, size: f32, dpi: u32) !void {
-        if (!glyph.outline) |_| {
+        if (glyph.outline == null) {
             return; // No outline to hint
         }
 
@@ -104,8 +104,8 @@ pub const HintingEngine = struct {
     }
 
     fn generateAutoHints(self: *Self, glyph: *Glyph.Glyph, size: f32, dpi: u32) !HintData {
-        var stem_hints = std.ArrayList(StemHint).init(self.allocator);
-        var point_adjustments = std.ArrayList(PointAdjustment).init(self.allocator);
+        var stem_hints = std.ArrayList(StemHint).empty;
+        var point_adjustments = std.ArrayList(PointAdjustment).empty;
 
         const outline = glyph.outline orelse return HintData{
             .stem_hints = &[_]StemHint{},
@@ -121,8 +121,8 @@ pub const HintingEngine = struct {
         }
 
         return HintData{
-            .stem_hints = try stem_hints.toOwnedSlice(),
-            .point_adjustments = try point_adjustments.toOwnedSlice(),
+            .stem_hints = try stem_hints.toOwnedSlice(self.allocator),
+            .point_adjustments = try point_adjustments.toOwnedSlice(self.allocator),
         };
     }
 
@@ -145,11 +145,11 @@ pub const HintingEngine = struct {
 
         // Simplified stem detection
         for (outline.contours) |contour| {
-            var vertical_stems = std.ArrayList(f32).init(self.allocator);
-            defer vertical_stems.deinit();
+            var vertical_stems = std.ArrayList(f32).empty;
+            defer vertical_stems.deinit(self.allocator);
 
-            var horizontal_stems = std.ArrayList(f32).init(self.allocator);
-            defer horizontal_stems.deinit();
+            var horizontal_stems = std.ArrayList(f32).empty;
+            defer horizontal_stems.deinit(self.allocator);
 
             // Find vertical and horizontal stems
             for (contour.points, 0..) |point, i| {
@@ -157,18 +157,18 @@ pub const HintingEngine = struct {
 
                 // Check for vertical stems (similar x coordinates)
                 if (@abs(point.x - next_point.x) < 2.0) {
-                    try vertical_stems.append(point.x);
+                    try vertical_stems.append(self.allocator, point.x);
                 }
 
                 // Check for horizontal stems (similar y coordinates)
                 if (@abs(point.y - next_point.y) < 2.0) {
-                    try horizontal_stems.append(point.y);
+                    try horizontal_stems.append(self.allocator, point.y);
                 }
             }
 
             // Create stem hints from detected stems
             for (vertical_stems.items) |x| {
-                try stem_hints.append(StemHint{
+                try stem_hints.append(self.allocator, StemHint{
                     .position = x,
                     .width = 1.0, // Default stem width
                     .direction = .vertical,
@@ -176,7 +176,7 @@ pub const HintingEngine = struct {
             }
 
             for (horizontal_stems.items) |y| {
-                try stem_hints.append(StemHint{
+                try stem_hints.append(self.allocator, StemHint{
                     .position = y,
                     .width = 1.0,
                     .direction = .horizontal,
@@ -186,8 +186,6 @@ pub const HintingEngine = struct {
     }
 
     fn generateGridFittingAdjustments(self: *Self, outline: Glyph.GlyphOutline, adjustments: *std.ArrayList(PointAdjustment), size: f32, dpi: u32) !void {
-        _ = self;
-
         const pixel_size = size * @as(f32, @floatFromInt(dpi)) / 72.0;
         const grid_unit = 1.0 / pixel_size;
 
@@ -201,7 +199,7 @@ pub const HintingEngine = struct {
                 const delta_y = snapped_y - point.y;
 
                 if (@abs(delta_x) > 0.1 or @abs(delta_y) > 0.1) {
-                    try adjustments.append(PointAdjustment{
+                    try adjustments.append(self.allocator, PointAdjustment{
                         .point_index = @as(u32, @intCast(contour_idx * 1000 + point_idx)), // Simplified indexing
                         .delta_x = delta_x,
                         .delta_y = delta_y,

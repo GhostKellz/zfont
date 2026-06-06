@@ -83,7 +83,7 @@ pub const TerminalTextHandler = struct {
         const analysis = try self.gcode_processor.analyzeCompleteText(text);
         defer self.deallocateAnalysis(&analysis);
 
-        var wrapped_lines = std.ArrayList(WrappedLine).init(self.allocator);
+        var wrapped_lines = std.ArrayList(WrappedLine).empty;
         var current_line = WrappedLine.init(self.allocator);
         var current_width: f32 = 0;
         const max_width = @as(f32, @floatFromInt(self.columns)) * self.cell_width;
@@ -96,13 +96,13 @@ pub const TerminalTextHandler = struct {
             // Check if word fits on current line
             if (current_width + word_width > max_width and current_line.segments.items.len > 0) {
                 // Start new line
-                try wrapped_lines.append(current_line);
+                try wrapped_lines.append(self.allocator, current_line);
                 current_line = WrappedLine.init(self.allocator);
                 current_width = 0;
             }
 
             // Add word to current line
-            try current_line.segments.append(LineSegment{
+            try current_line.segments.append(current_line.allocator, LineSegment{
                 .text = try self.allocator.dupe(u8, word_text),
                 .start = boundary.start,
                 .end = boundary.end,
@@ -115,7 +115,7 @@ pub const TerminalTextHandler = struct {
 
             // Handle explicit line breaks
             if (std.mem.indexOf(u8, word_text, "\n") != null) {
-                try wrapped_lines.append(current_line);
+                try wrapped_lines.append(self.allocator, current_line);
                 current_line = WrappedLine.init(self.allocator);
                 current_width = 0;
             }
@@ -123,12 +123,12 @@ pub const TerminalTextHandler = struct {
 
         // Add final line if not empty
         if (current_line.segments.items.len > 0) {
-            try wrapped_lines.append(current_line);
+            try wrapped_lines.append(self.allocator, current_line);
         } else {
             current_line.deinit();
         }
 
-        return wrapped_lines.toOwnedSlice();
+        return wrapped_lines.toOwnedSlice(self.allocator);
     }
 
     // Terminal cursor positioning in complex text
@@ -214,23 +214,25 @@ pub const TerminalTextHandler = struct {
         const word_boundaries = try self.gcode_processor.getWordBoundaries(text);
         defer self.allocator.free(word_boundaries);
 
-        var emoji_info = std.ArrayList(EmojiRenderInfo).init(self.allocator);
+        var emoji_info = std.ArrayList(EmojiRenderInfo).empty;
 
         for (word_boundaries) |boundary| {
             if (boundary.is_emoji_sequence) {
                 const emoji_text = text[boundary.start..boundary.end];
 
-                try emoji_info.append(EmojiRenderInfo{
+                // An emoji sequence renders as one double-width cell per grapheme
+                // cluster, regardless of how many code points the ZWJ sequence spans.
+                try emoji_info.append(self.allocator, EmojiRenderInfo{
                     .sequence = try self.allocator.dupe(u8, emoji_text),
                     .start = boundary.start,
                     .end = boundary.end,
-                    .terminal_width = @intCast(self.measureTextColumns(emoji_text)),
+                    .terminal_width = @intCast(@max(boundary.grapheme_count, 1) * 2),
                     .grapheme_count = boundary.grapheme_count,
                 });
             }
         }
 
-        return emoji_info.toOwnedSlice();
+        return emoji_info.toOwnedSlice(self.allocator);
     }
 
     // Text rendering pipeline for terminals
@@ -274,10 +276,10 @@ pub const TerminalTextHandler = struct {
         const script_runs = try self.gcode_processor.detectScriptRuns(visible_text);
         defer self.allocator.free(script_runs);
 
-        var simplified_runs = std.ArrayList(SimplifiedRun).init(self.allocator);
+        var simplified_runs = std.ArrayList(SimplifiedRun).empty;
 
         for (script_runs) |run| {
-            try simplified_runs.append(SimplifiedRun{
+            try simplified_runs.append(self.allocator, SimplifiedRun{
                 .text = try self.allocator.dupe(u8, run.text),
                 .script = run.script_info.script,
                 .direction = run.script_info.writing_direction,
@@ -287,7 +289,7 @@ pub const TerminalTextHandler = struct {
         }
 
         return OptimizedRenderData{
-            .runs = try simplified_runs.toOwnedSlice(),
+            .runs = try simplified_runs.toOwnedSlice(self.allocator),
             .visible_start = visible_start,
             .visible_end = visible_end,
         };
@@ -310,10 +312,12 @@ pub const CursorDirection = enum {
 
 pub const WrappedLine = struct {
     segments: std.ArrayList(LineSegment),
+    allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator) WrappedLine {
         return WrappedLine{
-            .segments = std.ArrayList(LineSegment).init(allocator),
+            .segments = .empty,
+            .allocator = allocator,
         };
     }
 
@@ -321,7 +325,7 @@ pub const WrappedLine = struct {
         for (self.segments.items) |*segment| {
             segment.allocator.free(segment.text);
         }
-        self.segments.deinit();
+        self.segments.deinit(self.allocator);
     }
 };
 

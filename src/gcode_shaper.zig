@@ -44,7 +44,7 @@ pub const GcodeTextShaper = struct {
         // Process each script run with appropriate shaper
         for (analysis.script_runs) |script_run| {
             const shaped_run = try self.shapeScriptRun(script_run, font_size, &analysis);
-            try shaped.runs.append(shaped_run);
+            try shaped.runs.append(self.allocator, shaped_run);
         }
 
         // Apply BiDi reordering if needed
@@ -68,18 +68,18 @@ pub const GcodeTextShaper = struct {
 
     fn shapeLatinRun(self: *Self, run: gcode_integration.ScriptRun, font_size: f32) !ShapedRun {
         // Simple Latin shaping - no complex processing needed
-        var glyphs = std.ArrayList(GlyphInfo).init(self.allocator);
+        var glyphs = std.ArrayList(GlyphInfo).empty;
 
         var i: usize = 0;
         while (i < run.text.len) {
             const char_len = std.unicode.utf8ByteSequenceLength(run.text[i]) catch 1;
             if (i + char_len <= run.text.len) {
-                const codepoint = std.unicode.utf8Decode(run.text[i..i + char_len]) catch {
+                const codepoint = std.unicode.utf8Decode(run.text[i .. i + char_len]) catch {
                     i += 1;
                     continue;
                 };
 
-                try glyphs.append(GlyphInfo{
+                try glyphs.append(self.allocator, GlyphInfo{
                     .glyph_id = @intCast(codepoint), // Simplified - would use actual font glyph IDs
                     .cluster = @intCast(i),
                     .x_advance = font_size * 0.6, // Approximate advance width
@@ -95,7 +95,7 @@ pub const GcodeTextShaper = struct {
         }
 
         return ShapedRun{
-            .glyphs = try glyphs.toOwnedSlice(),
+            .glyphs = try glyphs.toOwnedSlice(self.allocator),
             .script = run.script_info.script,
             .direction = run.script_info.writing_direction,
         };
@@ -124,6 +124,8 @@ pub const GcodeTextShaper = struct {
 
     fn deallocateAnalysis(self: *Self, analysis: *const gcode_integration.CompleteTextAnalysis) void {
         self.allocator.free(analysis.script_runs);
+        // Each BiDiRun owns a duped `text`; free those before the slice itself.
+        for (analysis.bidi_runs) |run| self.allocator.free(run.text);
         self.allocator.free(analysis.bidi_runs);
         self.allocator.free(analysis.word_boundaries);
         self.allocator.free(analysis.complex_analysis);
@@ -177,34 +179,34 @@ pub const ArabicShaper = struct {
     fn initializeJoiningTable(self: *Self) !void {
         // Basic Arabic characters - would be expanded for full coverage
         const arabic_chars = [_]struct { cp: u32, joining: JoiningType }{
-            .{ .cp = 0x0627, .joining = .right },     // Alef
-            .{ .cp = 0x0628, .joining = .dual },      // Beh
-            .{ .cp = 0x062A, .joining = .dual },      // Teh
-            .{ .cp = 0x062B, .joining = .dual },      // Theh
-            .{ .cp = 0x062C, .joining = .dual },      // Jeem
-            .{ .cp = 0x062D, .joining = .dual },      // Hah
-            .{ .cp = 0x062E, .joining = .dual },      // Khah
-            .{ .cp = 0x062F, .joining = .right },     // Dal
-            .{ .cp = 0x0630, .joining = .right },     // Thal
-            .{ .cp = 0x0631, .joining = .right },     // Reh
-            .{ .cp = 0x0632, .joining = .right },     // Zain
-            .{ .cp = 0x0633, .joining = .dual },      // Seen
-            .{ .cp = 0x0634, .joining = .dual },      // Sheen
-            .{ .cp = 0x0635, .joining = .dual },      // Sad
-            .{ .cp = 0x0636, .joining = .dual },      // Dad
-            .{ .cp = 0x0637, .joining = .dual },      // Tah
-            .{ .cp = 0x0638, .joining = .dual },      // Zah
-            .{ .cp = 0x0639, .joining = .dual },      // Ain
-            .{ .cp = 0x063A, .joining = .dual },      // Ghain
-            .{ .cp = 0x0641, .joining = .dual },      // Feh
-            .{ .cp = 0x0642, .joining = .dual },      // Qaf
-            .{ .cp = 0x0643, .joining = .dual },      // Kaf
-            .{ .cp = 0x0644, .joining = .dual },      // Lam
-            .{ .cp = 0x0645, .joining = .dual },      // Meem
-            .{ .cp = 0x0646, .joining = .dual },      // Noon
-            .{ .cp = 0x0647, .joining = .dual },      // Heh
-            .{ .cp = 0x0648, .joining = .right },     // Waw
-            .{ .cp = 0x064A, .joining = .dual },      // Yeh
+            .{ .cp = 0x0627, .joining = .right }, // Alef
+            .{ .cp = 0x0628, .joining = .dual }, // Beh
+            .{ .cp = 0x062A, .joining = .dual }, // Teh
+            .{ .cp = 0x062B, .joining = .dual }, // Theh
+            .{ .cp = 0x062C, .joining = .dual }, // Jeem
+            .{ .cp = 0x062D, .joining = .dual }, // Hah
+            .{ .cp = 0x062E, .joining = .dual }, // Khah
+            .{ .cp = 0x062F, .joining = .right }, // Dal
+            .{ .cp = 0x0630, .joining = .right }, // Thal
+            .{ .cp = 0x0631, .joining = .right }, // Reh
+            .{ .cp = 0x0632, .joining = .right }, // Zain
+            .{ .cp = 0x0633, .joining = .dual }, // Seen
+            .{ .cp = 0x0634, .joining = .dual }, // Sheen
+            .{ .cp = 0x0635, .joining = .dual }, // Sad
+            .{ .cp = 0x0636, .joining = .dual }, // Dad
+            .{ .cp = 0x0637, .joining = .dual }, // Tah
+            .{ .cp = 0x0638, .joining = .dual }, // Zah
+            .{ .cp = 0x0639, .joining = .dual }, // Ain
+            .{ .cp = 0x063A, .joining = .dual }, // Ghain
+            .{ .cp = 0x0641, .joining = .dual }, // Feh
+            .{ .cp = 0x0642, .joining = .dual }, // Qaf
+            .{ .cp = 0x0643, .joining = .dual }, // Kaf
+            .{ .cp = 0x0644, .joining = .dual }, // Lam
+            .{ .cp = 0x0645, .joining = .dual }, // Meem
+            .{ .cp = 0x0646, .joining = .dual }, // Noon
+            .{ .cp = 0x0647, .joining = .dual }, // Heh
+            .{ .cp = 0x0648, .joining = .right }, // Waw
+            .{ .cp = 0x064A, .joining = .dual }, // Yeh
         };
 
         for (arabic_chars) |char| {
@@ -213,7 +215,7 @@ pub const ArabicShaper = struct {
     }
 
     pub fn shapeRun(self: *Self, run: gcode_integration.ScriptRun, font_size: f32, analysis: *const gcode_integration.CompleteTextAnalysis) !ShapedRun {
-        var glyphs = std.ArrayList(GlyphInfo).init(self.allocator);
+        var glyphs = std.ArrayList(GlyphInfo).empty;
 
         // Use gcode's complex script analysis for Arabic shaping
         var i: usize = 0;
@@ -222,7 +224,7 @@ pub const ArabicShaper = struct {
         while (i < run.text.len) {
             const char_len = std.unicode.utf8ByteSequenceLength(run.text[i]) catch 1;
             if (i + char_len <= run.text.len) {
-                const codepoint = std.unicode.utf8Decode(run.text[i..i + char_len]) catch {
+                const codepoint = std.unicode.utf8Decode(run.text[i .. i + char_len]) catch {
                     i += 1;
                     continue;
                 };
@@ -241,7 +243,7 @@ pub const ArabicShaper = struct {
                     break :blk codepoint;
                 } else codepoint;
 
-                try glyphs.append(GlyphInfo{
+                try glyphs.append(self.allocator, GlyphInfo{
                     .glyph_id = @intCast(shaped_glyph),
                     .cluster = @intCast(i),
                     .x_advance = font_size * 0.6,
@@ -258,7 +260,7 @@ pub const ArabicShaper = struct {
         }
 
         return ShapedRun{
-            .glyphs = try glyphs.toOwnedSlice(),
+            .glyphs = try glyphs.toOwnedSlice(self.allocator),
             .script = .arabic,
             .direction = .rtl,
         };
@@ -303,7 +305,7 @@ pub const IndicShaper = struct {
     }
 
     pub fn shapeRun(self: *Self, run: gcode_integration.ScriptRun, font_size: f32, analysis: *const gcode_integration.CompleteTextAnalysis) !ShapedRun {
-        var glyphs = std.ArrayList(GlyphInfo).init(self.allocator);
+        var glyphs = std.ArrayList(GlyphInfo).empty;
 
         // Process Indic text with gcode syllable analysis
         var i: usize = 0;
@@ -312,7 +314,7 @@ pub const IndicShaper = struct {
         while (i < run.text.len) {
             const char_len = std.unicode.utf8ByteSequenceLength(run.text[i]) catch 1;
             if (i + char_len <= run.text.len) {
-                const codepoint = std.unicode.utf8Decode(run.text[i..i + char_len]) catch {
+                const codepoint = std.unicode.utf8Decode(run.text[i .. i + char_len]) catch {
                     i += 1;
                     continue;
                 };
@@ -350,7 +352,7 @@ pub const IndicShaper = struct {
                     }
                 }
 
-                try glyphs.append(glyph_info);
+                try glyphs.append(self.allocator, glyph_info);
                 i += char_len;
                 analysis_idx += 1;
             } else {
@@ -359,7 +361,7 @@ pub const IndicShaper = struct {
         }
 
         return ShapedRun{
-            .glyphs = try glyphs.toOwnedSlice(),
+            .glyphs = try glyphs.toOwnedSlice(self.allocator),
             .script = run.script_info.script,
             .direction = .ltr,
         };
@@ -383,7 +385,7 @@ pub const CJKShaper = struct {
     }
 
     pub fn shapeRun(self: *Self, run: gcode_integration.ScriptRun, font_size: f32, analysis: *const gcode_integration.CompleteTextAnalysis) !ShapedRun {
-        var glyphs = std.ArrayList(GlyphInfo).init(self.allocator);
+        var glyphs = std.ArrayList(GlyphInfo).empty;
 
         var i: usize = 0;
         var analysis_idx: usize = 0;
@@ -391,7 +393,7 @@ pub const CJKShaper = struct {
         while (i < run.text.len) {
             const char_len = std.unicode.utf8ByteSequenceLength(run.text[i]) catch 1;
             if (i + char_len <= run.text.len) {
-                const codepoint = std.unicode.utf8Decode(run.text[i..i + char_len]) catch {
+                const codepoint = std.unicode.utf8Decode(run.text[i .. i + char_len]) catch {
                     i += 1;
                     continue;
                 };
@@ -404,7 +406,7 @@ pub const CJKShaper = struct {
 
                 const display_width = if (char_analysis) |ca| ca.display_width else 1.0;
 
-                try glyphs.append(GlyphInfo{
+                try glyphs.append(self.allocator, GlyphInfo{
                     .glyph_id = @intCast(codepoint),
                     .cluster = @intCast(i),
                     .x_advance = font_size * display_width, // Use gcode width
@@ -421,7 +423,7 @@ pub const CJKShaper = struct {
         }
 
         return ShapedRun{
-            .glyphs = try glyphs.toOwnedSlice(),
+            .glyphs = try glyphs.toOwnedSlice(self.allocator),
             .script = run.script_info.script,
             .direction = .ltr,
         };
@@ -445,18 +447,18 @@ pub const EmojiShaper = struct {
     }
 
     pub fn shapeEmojiSequences(self: *Self, text: []const u8, font_size: f32, word_boundaries: []gcode_integration.WordBoundary) ![]EmojiGlyph {
-        var emoji_glyphs = std.ArrayList(EmojiGlyph).init(self.allocator);
+        var emoji_glyphs = std.ArrayList(EmojiGlyph).empty;
 
         // Use gcode word boundary detection to find emoji sequences
         for (word_boundaries) |boundary| {
             if (boundary.is_emoji_sequence) {
                 const emoji_text = text[boundary.start..boundary.end];
                 const emoji_glyph = try self.renderEmojiSequence(emoji_text, font_size);
-                try emoji_glyphs.append(emoji_glyph);
+                try emoji_glyphs.append(self.allocator, emoji_glyph);
             }
         }
 
-        return emoji_glyphs.toOwnedSlice();
+        return emoji_glyphs.toOwnedSlice(self.allocator);
     }
 
     fn renderEmojiSequence(self: *Self, emoji_sequence: []const u8, font_size: f32) !EmojiGlyph {
@@ -478,7 +480,7 @@ pub const ShapedText = struct {
 
     pub fn init(allocator: std.mem.Allocator) ShapedText {
         return ShapedText{
-            .runs = std.ArrayList(ShapedRun).init(allocator),
+            .runs = std.ArrayList(ShapedRun).empty,
             .allocator = allocator,
         };
     }
@@ -487,7 +489,7 @@ pub const ShapedText = struct {
         for (self.runs.items) |*run| {
             self.allocator.free(run.glyphs);
         }
-        self.runs.deinit();
+        self.runs.deinit(self.allocator);
     }
 };
 

@@ -136,39 +136,39 @@ pub const TextShaper = struct {
     }
 
     fn createFeaturesForScript(self: *Self, script: @import("font.zig").Script, language: Language) ![]Feature {
-        var features = std.ArrayList(Feature).init(self.allocator);
+        var features = std.ArrayList(Feature).empty;
 
         // Add common features
-        try features.append(.{ .tag = "kern", .enabled = true }); // Kerning
-        try features.append(.{ .tag = "liga", .enabled = true }); // Standard ligatures
+        try features.append(self.allocator, .{ .tag = "kern", .enabled = true }); // Kerning
+        try features.append(self.allocator, .{ .tag = "liga", .enabled = true }); // Standard ligatures
 
         // Add script-specific features
         switch (script) {
             .latin => {
-                try features.append(.{ .tag = "clig", .enabled = true }); // Contextual ligatures
+                try features.append(self.allocator, .{ .tag = "clig", .enabled = true }); // Contextual ligatures
                 if (language == .english) {
-                    try features.append(.{ .tag = "dlig", .enabled = false }); // Discretionary ligatures
+                    try features.append(self.allocator, .{ .tag = "dlig", .enabled = false }); // Discretionary ligatures
                 }
             },
             .arabic => {
-                try features.append(.{ .tag = "init", .enabled = true }); // Initial forms
-                try features.append(.{ .tag = "medi", .enabled = true }); // Medial forms
-                try features.append(.{ .tag = "fina", .enabled = true }); // Final forms
-                try features.append(.{ .tag = "rlig", .enabled = true }); // Required ligatures
+                try features.append(self.allocator, .{ .tag = "init", .enabled = true }); // Initial forms
+                try features.append(self.allocator, .{ .tag = "medi", .enabled = true }); // Medial forms
+                try features.append(self.allocator, .{ .tag = "fina", .enabled = true }); // Final forms
+                try features.append(self.allocator, .{ .tag = "rlig", .enabled = true }); // Required ligatures
             },
             .devanagari => {
-                try features.append(.{ .tag = "nukt", .enabled = true }); // Nukta forms
-                try features.append(.{ .tag = "akhn", .enabled = true }); // Akhands
-                try features.append(.{ .tag = "rphf", .enabled = true }); // Reph forms
+                try features.append(self.allocator, .{ .tag = "nukt", .enabled = true }); // Nukta forms
+                try features.append(self.allocator, .{ .tag = "akhn", .enabled = true }); // Akhands
+                try features.append(self.allocator, .{ .tag = "rphf", .enabled = true }); // Reph forms
             },
             .chinese, .japanese, .korean => {
-                try features.append(.{ .tag = "vert", .enabled = false }); // Vertical writing
-                try features.append(.{ .tag = "vrt2", .enabled = false }); // Vertical alternates
+                try features.append(self.allocator, .{ .tag = "vert", .enabled = false }); // Vertical writing
+                try features.append(self.allocator, .{ .tag = "vrt2", .enabled = false }); // Vertical alternates
             },
             else => {},
         }
 
-        return features.toOwnedSlice();
+        return features.toOwnedSlice(self.allocator);
     }
 
     fn performBasicShaping(self: *Self, result: *ShapingResult, text: []const u8, font: *Font, options: ShapingOptions) !void {
@@ -182,21 +182,23 @@ pub const TextShaper = struct {
         while (iterator.nextCodepoint()) |codepoint| {
             const glyph_index = font.parser.getGlyphIndex(codepoint) catch 0;
 
-            if (glyph_index == 0 and options.fallback_font) |fallback| {
-                const fallback_index = fallback.parser.getGlyphIndex(codepoint) catch 0;
-                if (fallback_index != 0) {
-                    const shaped_glyph = ShapedGlyph{
-                        .glyph_index = fallback_index,
-                        .codepoint = codepoint,
-                        .cluster = cluster,
-                        .x_advance = fallback.getAdvanceWidth(codepoint, options.size) catch 0,
-                        .y_advance = 0,
-                        .x_offset = 0,
-                        .y_offset = 0,
-                    };
-                    try result.glyphs.append(shaped_glyph);
-                    cluster += 1;
-                    continue;
+            if (glyph_index == 0) {
+                if (options.fallback_font) |fallback| {
+                    const fallback_index = fallback.parser.getGlyphIndex(codepoint) catch 0;
+                    if (fallback_index != 0) {
+                        const shaped_glyph = ShapedGlyph{
+                            .glyph_index = fallback_index,
+                            .codepoint = codepoint,
+                            .cluster = cluster,
+                            .x_advance = fallback.getAdvanceWidth(codepoint, options.size) catch 0,
+                            .y_advance = 0,
+                            .x_offset = 0,
+                            .y_offset = 0,
+                        };
+                        try result.glyphs.append(result.allocator, shaped_glyph);
+                        cluster += 1;
+                        continue;
+                    }
                 }
             }
 
@@ -210,7 +212,7 @@ pub const TextShaper = struct {
                     .x_offset = 0,
                     .y_offset = 0,
                 };
-                try result.glyphs.append(shaped_glyph);
+                try result.glyphs.append(result.allocator, shaped_glyph);
             }
 
             cluster += 1;
@@ -354,7 +356,7 @@ pub const ShapingResult = struct {
     }
 
     pub fn deinit(self: *ShapingResult) void {
-        self.glyphs.deinit();
+        self.glyphs.deinit(self.allocator);
     }
 };
 
@@ -440,7 +442,7 @@ test "TextShaper basic operations" {
     try std.testing.expect(script == .latin);
 
     const arabic_script = shaper.detectPrimaryScript("مرحبا");
-    try std.testing.expect(arabic_script == .unknown); // Since our detectScript is simplified
+    try std.testing.expect(arabic_script == .arabic);
 }
 
 test "Feature creation" {

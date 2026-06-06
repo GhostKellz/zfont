@@ -5,12 +5,37 @@ const FontManager = @import("font_manager.zig").FontManager;
 // Multi-threaded font loading and processing
 // Optimized for modern multi-core systems
 
+// Minimal blocking-lock helper built on the spinlock `std.atomic.Mutex`,
+// which only exposes `tryLock`/`unlock`. We emulate a blocking acquire by
+// spinning and yielding the thread until the lock is taken.
+fn lockMutex(m: *std.atomic.Mutex) void {
+    while (!m.tryLock()) {
+        std.Thread.yield() catch {};
+    }
+}
+
+fn unlockMutex(m: *std.atomic.Mutex) void {
+    m.unlock();
+}
+
 pub const FontLoader = struct {
     allocator: std.mem.Allocator,
-    thread_pool: std.Thread.Pool,
-    loading_queue: std.atomic.Queue(LoadRequest),
-    completed_queue: std.atomic.Queue(LoadResult),
+
+    // Worker pool: a fixed set of threads pulling jobs from a shared,
+    // mutex-guarded queue until `is_running` is cleared.
+    workers: std.ArrayList(std.Thread),
     worker_count: u32,
+    workers_started: bool,
+
+    // Pending load requests. Guarded by `queue_mutex`.
+    loading_queue: std.ArrayList(LoadRequest),
+    queue_mutex: std.atomic.Mutex,
+
+    // Completed results. Guarded by `completed_mutex`.
+    completed_queue: std.ArrayList(LoadResult),
+    completed_mutex: std.atomic.Mutex,
+
+    // Cleared on deinit to signal workers to stop.
     is_running: std.atomic.Value(bool),
 
     const Self = @This();
@@ -42,45 +67,68 @@ pub const FontLoader = struct {
     };
 
     pub fn init(allocator: std.mem.Allocator, worker_count: ?u32) !Self {
-        const actual_worker_count = worker_count orelse @max(1, std.Thread.getCpuCount() catch 4);
+        const actual_worker_count = worker_count orelse @as(u32, @intCast(@max(1, std.Thread.getCpuCount() catch 4)));
 
-        var loader = Self{
+        // Workers are spawned lazily on the first enqueue: `init` returns the
+        // struct by value, so spawning here would hand workers a pointer to a
+        // soon-to-be-moved stack value. Deferring until `loadFontAsync` lets us
+        // pass the caller's stable `self` pointer instead.
+        return Self{
             .allocator = allocator,
-            .thread_pool = undefined,
-            .loading_queue = std.atomic.Queue(LoadRequest).init(),
-            .completed_queue = std.atomic.Queue(LoadResult).init(),
+            .workers = std.ArrayList(std.Thread).empty,
             .worker_count = actual_worker_count,
+            .workers_started = false,
+            .loading_queue = std.ArrayList(LoadRequest).empty,
+            .queue_mutex = .unlocked,
+            .completed_queue = std.ArrayList(LoadResult).empty,
+            .completed_mutex = .unlocked,
             .is_running = std.atomic.Value(bool).init(true),
         };
+    }
 
-        // Initialize thread pool
-        loader.thread_pool = std.Thread.Pool.init(.{
-            .allocator = allocator,
-            .n_jobs = actual_worker_count,
-        });
+    // Spawn the fixed pool of worker threads, each pulling jobs from the shared
+    // queue until shutdown is signalled. Idempotent and guarded by the queue
+    // mutex held by the caller.
+    fn ensureWorkers(self: *Self) !void {
+        if (self.workers_started) return;
+        self.workers_started = true;
 
-        return loader;
+        try self.workers.ensureTotalCapacity(self.allocator, self.worker_count);
+        var spawned: u32 = 0;
+        while (spawned < self.worker_count) : (spawned += 1) {
+            const thread = std.Thread.spawn(.{}, workerMain, .{self}) catch break;
+            self.workers.appendAssumeCapacity(thread);
+        }
     }
 
     pub fn deinit(self: *Self) void {
-        // Stop workers
-        self.is_running.store(false, .monotonic);
+        self.stopAndJoin();
 
-        // Wait for all threads to complete
-        self.thread_pool.deinit();
-
-        // Clean up remaining items in queues
-        while (self.loading_queue.get()) |node| {
-            self.allocator.destroy(node);
+        // Drain any remaining pending requests, freeing their owned paths.
+        for (self.loading_queue.items) |request| {
+            self.allocator.free(request.font_path);
         }
+        self.loading_queue.deinit(self.allocator);
 
-        while (self.completed_queue.get()) |node| {
-            if (node.data.font) |font| {
+        // Drain any remaining completed results, freeing owned fonts.
+        for (self.completed_queue.items) |result| {
+            if (result.font) |font| {
                 font.deinit();
                 self.allocator.destroy(font);
             }
-            self.allocator.destroy(node);
         }
+        self.completed_queue.deinit(self.allocator);
+    }
+
+    // Signal shutdown and join every spawned worker before any shared state
+    // is freed. Safe to call multiple times.
+    fn stopAndJoin(self: *Self) void {
+        self.is_running.store(false, .monotonic);
+        for (self.workers.items) |thread| {
+            thread.join();
+        }
+        self.workers.deinit(self.allocator);
+        self.workers = std.ArrayList(std.Thread).empty;
     }
 
     pub fn loadFontAsync(self: *Self, font_path: []const u8, priority: Priority, context: ?*anyopaque) !u64 {
@@ -93,54 +141,74 @@ pub const FontLoader = struct {
             .callback_context = context,
         };
 
-        const node = try self.allocator.create(std.atomic.Queue(LoadRequest).Node);
-        node.* = std.atomic.Queue(LoadRequest).Node{ .data = request };
+        // Enqueue for the worker pool to pick up, spawning the pool on first use.
+        lockMutex(&self.queue_mutex);
+        defer unlockMutex(&self.queue_mutex);
 
-        self.loading_queue.put(node);
+        self.ensureWorkers() catch |err| {
+            self.allocator.free(request.font_path);
+            return err;
+        };
 
-        // Spawn worker task
-        try self.thread_pool.spawn(fontLoaderWorker, .{ self, node });
+        self.loading_queue.append(self.allocator, request) catch |err| {
+            self.allocator.free(request.font_path);
+            return err;
+        };
 
         return id;
     }
 
     pub fn getCompletedFont(self: *Self, id: u64) ?LoadResult {
-        // Non-blocking check for completed fonts
-        var current = self.completed_queue.get();
-        var prev: ?*std.atomic.Queue(LoadResult).Node = null;
+        // Non-blocking check for a specific completed font.
+        lockMutex(&self.completed_mutex);
+        defer unlockMutex(&self.completed_mutex);
 
-        while (current) |node| {
-            if (node.data.id == id) {
-                // Remove from queue
-                if (prev) |p| {
-                    p.next = node.next;
-                } else {
-                    // This was the first node
-                }
-
-                const result = node.data;
-                self.allocator.destroy(node);
-                return result;
+        for (self.completed_queue.items, 0..) |result, index| {
+            if (result.id == id) {
+                return self.completed_queue.orderedRemove(index);
             }
-            prev = node;
-            current = node.next;
         }
 
         return null;
     }
 
     pub fn pollCompletedFonts(self: *Self, results: *std.ArrayList(LoadResult)) !void {
-        // Get all completed font loading results
-        while (self.completed_queue.get()) |node| {
-            try results.append(node.data);
-            self.allocator.destroy(node);
+        // Drain all currently completed font loading results.
+        lockMutex(&self.completed_mutex);
+        defer unlockMutex(&self.completed_mutex);
+
+        try results.appendSlice(self.allocator, self.completed_queue.items);
+        self.completed_queue.clearRetainingCapacity();
+    }
+
+    // Worker thread main loop: pull jobs from the shared queue, run the load,
+    // and push results back until shutdown is signalled and the queue drains.
+    fn workerMain(self: *Self) void {
+        while (true) {
+            const maybe_request = self.dequeueRequest();
+            if (maybe_request) |request| {
+                self.processRequest(request);
+                continue;
+            }
+
+            // No work right now. Exit once shutdown was requested, otherwise
+            // back off briefly to avoid busy-spinning.
+            if (!self.is_running.load(.monotonic)) return;
+            std.Thread.yield() catch {};
         }
     }
 
-    fn fontLoaderWorker(self: *Self, request_node: *std.atomic.Queue(LoadRequest).Node) void {
-        defer self.allocator.destroy(request_node);
+    fn dequeueRequest(self: *Self) ?LoadRequest {
+        lockMutex(&self.queue_mutex);
+        defer unlockMutex(&self.queue_mutex);
 
-        const request = request_node.data;
+        if (self.loading_queue.items.len > 0) {
+            return self.loading_queue.orderedRemove(0);
+        }
+        return null;
+    }
+
+    fn processRequest(self: *Self, request: LoadRequest) void {
         defer self.allocator.free(request.font_path);
 
         var result = LoadResult{
@@ -149,8 +217,8 @@ pub const FontLoader = struct {
             .callback_context = request.callback_context,
         };
 
-        // Perform font loading
-        result.font = self.loadFontFromFile(request.font_path) catch |err| {
+        // Perform font loading (heavy I/O + parsing).
+        result.font = self.loadFontFromFile(request.font_path) catch |err| blk: {
             result.error_info = LoadError{
                 .error_type = switch (err) {
                     error.FileNotFound => root.FontError.FontNotFound,
@@ -160,33 +228,35 @@ pub const FontLoader = struct {
                 },
                 .message = @errorName(err),
             };
-            null;
+            break :blk null;
         };
 
-        // Queue result
-        const result_node = self.allocator.create(std.atomic.Queue(LoadResult).Node) catch {
-            // Critical failure - can't even allocate result node
+        // Publish the result for consumers.
+        lockMutex(&self.completed_mutex);
+        defer unlockMutex(&self.completed_mutex);
+        self.completed_queue.append(self.allocator, result) catch {
+            // Critical failure: cannot store the result, so drop the font to
+            // avoid leaking it.
             if (result.font) |font| {
                 font.deinit();
                 self.allocator.destroy(font);
             }
-            return;
         };
-
-        result_node.* = std.atomic.Queue(LoadResult).Node{ .data = result };
-        self.completed_queue.put(result_node);
     }
 
     fn loadFontFromFile(self: *Self, font_path: []const u8) !*root.Font {
-        // Load font data from file (this is the heavy I/O operation)
-        const font_data = try std.fs.cwd().readFileAlloc(
-            self.allocator,
+        const io = std.Io.Threaded.global_single_threaded.io();
+
+        // Load font data from file (this is the heavy I/O operation).
+        const font_data = try std.Io.Dir.cwd().readFileAlloc(
+            io,
             font_path,
-            50 * 1024 * 1024, // 50MB max
+            self.allocator,
+            std.Io.Limit.limited(50 * 1024 * 1024), // 50MB max
         );
         defer self.allocator.free(font_data);
 
-        // Create and initialize font
+        // Create and initialize font.
         const font = try self.allocator.create(root.Font);
         errdefer self.allocator.destroy(font);
 
@@ -222,14 +292,17 @@ pub const BatchFontLoader = struct {
         return Self{
             .allocator = allocator,
             .base_loader = try FontLoader.init(allocator, null),
-            .batch_requests = std.ArrayList(BatchRequest).init(allocator),
+            .batch_requests = std.ArrayList(BatchRequest).empty,
             .batch_size = batch_size,
         };
     }
 
     pub fn deinit(self: *Self) void {
         self.base_loader.deinit();
-        self.batch_requests.deinit();
+        for (self.batch_requests.items) |request| {
+            self.allocator.free(request.paths);
+        }
+        self.batch_requests.deinit(self.allocator);
     }
 
     pub fn loadFontBatch(self: *Self, font_paths: []const []const u8, priority: FontLoader.Priority) !u64 {
@@ -253,7 +326,7 @@ pub const BatchFontLoader = struct {
             .priority = priority,
             .batch_id = batch_id,
         };
-        try self.batch_requests.append(request);
+        try self.batch_requests.append(self.allocator, request);
 
         return batch_id;
     }
@@ -266,8 +339,8 @@ pub const BatchFontLoader = struct {
                 var failed: u32 = 0;
 
                 // Count completed/failed fonts (simplified)
-                var results = std.ArrayList(FontLoader.LoadResult).init(self.allocator);
-                defer results.deinit();
+                var results = std.ArrayList(FontLoader.LoadResult).empty;
+                defer results.deinit(self.allocator);
 
                 self.base_loader.pollCompletedFonts(&results) catch return null;
 
@@ -304,7 +377,7 @@ pub const FontDiscovery = struct {
     allocator: std.mem.Allocator,
     discovered_fonts: std.ArrayList(DiscoveredFont),
     discovery_threads: std.ArrayList(std.Thread),
-    mutex: std.Thread.Mutex,
+    mutex: std.atomic.Mutex,
 
     const Self = @This();
 
@@ -322,9 +395,9 @@ pub const FontDiscovery = struct {
     pub fn init(allocator: std.mem.Allocator) Self {
         return Self{
             .allocator = allocator,
-            .discovered_fonts = std.ArrayList(DiscoveredFont).init(allocator),
-            .discovery_threads = std.ArrayList(std.Thread).init(allocator),
-            .mutex = std.Thread.Mutex{},
+            .discovered_fonts = std.ArrayList(DiscoveredFont).empty,
+            .discovery_threads = std.ArrayList(std.Thread).empty,
+            .mutex = .unlocked,
         };
     }
 
@@ -333,7 +406,7 @@ pub const FontDiscovery = struct {
         for (self.discovery_threads.items) |thread| {
             thread.join();
         }
-        self.discovery_threads.deinit();
+        self.discovery_threads.deinit(self.allocator);
 
         // Free discovered font paths
         for (self.discovered_fonts.items) |font| {
@@ -341,7 +414,7 @@ pub const FontDiscovery = struct {
             if (font.family_name) |name| self.allocator.free(name);
             if (font.style_name) |name| self.allocator.free(name);
         }
-        self.discovered_fonts.deinit();
+        self.discovered_fonts.deinit(self.allocator);
     }
 
     pub fn discoverSystemFonts(self: *Self) !void {
@@ -350,7 +423,7 @@ pub const FontDiscovery = struct {
         // Spawn discovery thread for each directory
         for (system_font_dirs) |dir| {
             const thread = try std.Thread.spawn(.{}, Self.discoveryWorker, .{ self, dir });
-            try self.discovery_threads.append(thread);
+            try self.discovery_threads.append(self.allocator, thread);
         }
     }
 
@@ -361,14 +434,16 @@ pub const FontDiscovery = struct {
     }
 
     fn scanDirectory(self: *Self, dir_path: []const u8) !void {
-        var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch |err| switch (err) {
+        const io = std.Io.Threaded.global_single_threaded.io();
+
+        var dir = std.Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch |err| switch (err) {
             error.FileNotFound => return,
             else => return err,
         };
-        defer dir.close();
+        defer dir.close(io);
 
         var iterator = dir.iterate();
-        while (try iterator.next()) |entry| {
+        while (try iterator.next(io)) |entry| {
             if (entry.kind == .file and isFontFile(entry.name)) {
                 const full_path = try std.fs.path.join(
                     self.allocator,
@@ -380,17 +455,17 @@ pub const FontDiscovery = struct {
                 };
 
                 // Get file metadata
-                const stat = dir.statFile(entry.name) catch continue;
+                const stat = dir.statFile(io, entry.name, .{}) catch continue;
                 discovered.file_size = stat.size;
-                discovered.last_modified = @intCast(stat.mtime);
+                discovered.last_modified = @intCast(stat.mtime.toNanoseconds());
 
                 // Quick font analysis (without full parsing)
                 self.analyzeFont(&discovered) catch {};
 
                 // Thread-safe addition to results
-                self.mutex.lock();
-                defer self.mutex.unlock();
-                self.discovered_fonts.append(discovered) catch {};
+                lockMutex(&self.mutex);
+                defer unlockMutex(&self.mutex);
+                self.discovered_fonts.append(self.allocator, discovered) catch {};
             } else if (entry.kind == .directory and !std.mem.eql(u8, entry.name, ".")) {
                 // Recursive directory scanning
                 const subdirectory = try std.fs.path.join(
@@ -464,10 +539,7 @@ pub const FontDiscovery = struct {
         const extensions = [_][]const u8{ ".ttf", ".otf", ".woff", ".woff2", ".ttc" };
 
         for (extensions) |ext| {
-            if (std.mem.endsWith(u8, std.mem.toLower(
-                std.heap.page_allocator,
-                filename,
-            ) catch filename, ext)) {
+            if (std.ascii.endsWithIgnoreCase(filename, ext)) {
                 return true;
             }
         }
@@ -475,8 +547,8 @@ pub const FontDiscovery = struct {
     }
 
     pub fn getDiscoveredFonts(self: *Self) []const DiscoveredFont {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        lockMutex(&self.mutex);
+        defer unlockMutex(&self.mutex);
         return self.discovered_fonts.items;
     }
 };

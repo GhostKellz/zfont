@@ -5,25 +5,26 @@ const root = @import("root.zig");
 // Provides significant performance improvements for large font files
 pub const MemoryMappedFont = struct {
     allocator: std.mem.Allocator,
-    file: std.fs.File,
-    data: []align(std.mem.page_size) const u8,
+    file: std.Io.File,
+    data: []align(std.heap.page_size_min) const u8,
     size: u64,
     path: []const u8,
 
     const Self = @This();
 
     pub fn init(allocator: std.mem.Allocator, font_path: []const u8) !Self {
-        const file = try std.fs.cwd().openFile(font_path, .{});
-        errdefer file.close();
+        const io = std.Io.Threaded.global_single_threaded.io();
+        const file = try std.Io.Dir.cwd().openFile(io, font_path, .{});
+        errdefer file.close(io);
 
-        const stat = try file.stat();
+        const stat = try file.stat(io);
         const size = stat.size;
 
         // Memory-map the entire font file
         const mapped_data = try std.posix.mmap(
             null,
             size,
-            std.posix.PROT.READ,
+            .{ .READ = true },
             .{ .TYPE = .SHARED },
             file.handle,
             0,
@@ -39,8 +40,9 @@ pub const MemoryMappedFont = struct {
     }
 
     pub fn deinit(self: *Self) void {
+        const io = std.Io.Threaded.global_single_threaded.io();
         std.posix.munmap(self.data);
-        self.file.close();
+        self.file.close(io);
         self.allocator.free(self.path);
     }
 
@@ -58,7 +60,7 @@ pub const MemoryMappedFont = struct {
 
     // Prefault pages to reduce initial access latency
     pub fn prefault(self: *const Self) void {
-        const page_size = std.mem.page_size;
+        const page_size = std.heap.page_size_min;
         const pages = (self.size + page_size - 1) / page_size;
 
         var i: usize = 0;
@@ -73,15 +75,15 @@ pub const MemoryMappedFont = struct {
 
     // Advise kernel about memory access patterns
     pub fn adviseSequential(self: *const Self) void {
-        _ = std.posix.madvise(self.data.ptr, self.size, std.posix.MADV.SEQUENTIAL) catch {};
+        _ = std.posix.madvise(@constCast(self.data.ptr), self.size, std.posix.MADV.SEQUENTIAL) catch {};
     }
 
     pub fn adviseRandom(self: *const Self) void {
-        _ = std.posix.madvise(self.data.ptr, self.size, std.posix.MADV.RANDOM) catch {};
+        _ = std.posix.madvise(@constCast(self.data.ptr), self.size, std.posix.MADV.RANDOM) catch {};
     }
 
     pub fn adviseWillNeed(self: *const Self) void {
-        _ = std.posix.madvise(self.data.ptr, self.size, std.posix.MADV.WILLNEED) catch {};
+        _ = std.posix.madvise(@constCast(self.data.ptr), self.size, std.posix.MADV.WILLNEED) catch {};
     }
 };
 
@@ -90,7 +92,7 @@ pub const MemoryMappedFontCache = struct {
     allocator: std.mem.Allocator,
     fonts: std.StringHashMap(*MemoryMappedFont),
     max_fonts: u32,
-    mutex: std.Thread.Mutex,
+    mutex: std.atomic.Mutex,
 
     const Self = @This();
 
@@ -99,12 +101,12 @@ pub const MemoryMappedFontCache = struct {
             .allocator = allocator,
             .fonts = std.StringHashMap(*MemoryMappedFont).init(allocator),
             .max_fonts = max_fonts,
-            .mutex = std.Thread.Mutex{},
+            .mutex = .unlocked,
         };
     }
 
     pub fn deinit(self: *Self) void {
-        self.mutex.lock();
+        while (!self.mutex.tryLock()) {}
         defer self.mutex.unlock();
 
         var iterator = self.fonts.iterator();
@@ -117,7 +119,7 @@ pub const MemoryMappedFontCache = struct {
     }
 
     pub fn getFont(self: *Self, font_path: []const u8) !*MemoryMappedFont {
-        self.mutex.lock();
+        while (!self.mutex.tryLock()) {}
         defer self.mutex.unlock();
 
         if (self.fonts.get(font_path)) |font| {
@@ -169,7 +171,7 @@ pub const MemoryMappedFontCache = struct {
 // Shared font data for system fonts
 pub const SharedFontData = struct {
     allocator: std.mem.Allocator,
-    shared_memory: ?[]align(std.mem.page_size) u8,
+    shared_memory: ?[]align(std.heap.page_size_min) u8,
     fonts: std.ArrayList(SharedFont),
 
     const Self = @This();
@@ -184,7 +186,7 @@ pub const SharedFontData = struct {
         return Self{
             .allocator = allocator,
             .shared_memory = null,
-            .fonts = std.ArrayList(SharedFont).init(allocator),
+            .fonts = std.ArrayList(SharedFont).empty,
         };
     }
 
@@ -196,7 +198,7 @@ pub const SharedFontData = struct {
         for (self.fonts.items) |font| {
             self.allocator.free(font.name);
         }
-        self.fonts.deinit();
+        self.fonts.deinit(self.allocator);
     }
 
     // Create shared memory segment for common system fonts
@@ -204,7 +206,7 @@ pub const SharedFontData = struct {
         const mapped = try std.posix.mmap(
             null,
             size,
-            std.posix.PROT.READ | std.posix.PROT.WRITE,
+            .{ .READ = true, .WRITE = true },
             .{ .TYPE = .SHARED, .ANONYMOUS = true },
             -1,
             0,
@@ -227,9 +229,9 @@ pub const SharedFontData = struct {
         }
 
         // Copy font data to shared memory
-        @memcpy(shared_mem[offset..offset + data.len], data);
+        @memcpy(shared_mem[offset .. offset + data.len], data);
 
-        try self.fonts.append(SharedFont{
+        try self.fonts.append(self.allocator, SharedFont{
             .name = try self.allocator.dupe(u8, name),
             .offset = offset,
             .size = data.len,
@@ -241,7 +243,7 @@ pub const SharedFontData = struct {
 
         for (self.fonts.items) |font| {
             if (std.mem.eql(u8, font.name, name)) {
-                return shared_mem[font.offset..font.offset + font.size];
+                return shared_mem[font.offset .. font.offset + font.size];
             }
         }
         return null;

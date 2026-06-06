@@ -10,7 +10,7 @@ pub const FontParser = struct {
 
     const Self = @This();
 
-    const TableRecord = struct {
+    pub const TableRecord = struct {
         offset: u32,
         length: u32,
         checksum: u32,
@@ -81,10 +81,10 @@ pub const FontParser = struct {
                 return root.FontError.InvalidFontData;
             }
 
-            const tag = self.data[offset..offset + 4];
-            const checksum = std.mem.readInt(u32, self.data[offset + 4..offset + 8][0..4], .big);
-            const table_offset = std.mem.readInt(u32, self.data[offset + 8..offset + 12][0..4], .big);
-            const length = std.mem.readInt(u32, self.data[offset + 12..offset + 16][0..4], .big);
+            const tag = self.data[offset .. offset + 4];
+            const checksum = std.mem.readInt(u32, self.data[offset + 4 .. offset + 8][0..4], .big);
+            const table_offset = std.mem.readInt(u32, self.data[offset + 8 .. offset + 12][0..4], .big);
+            const length = std.mem.readInt(u32, self.data[offset + 12 .. offset + 16][0..4], .big);
 
             const tag_str = try self.allocator.dupe(u8, tag);
             try self.tables.put(tag_str, TableRecord{
@@ -105,12 +105,13 @@ pub const FontParser = struct {
 
         var result: T = undefined;
         const bytes = @as([*]u8, @ptrCast(&result))[0..size];
-        @memcpy(bytes, self.data[offset..offset + size]);
+        @memcpy(bytes, self.data[offset .. offset + size]);
 
         // Convert from big-endian
-        inline for (@typeInfo(T).@"struct".fields) |field| {
-            const field_ptr = &@field(result, field.name);
-            switch (field.type) {
+        const struct_info = @typeInfo(T).@"struct";
+        inline for (struct_info.field_names, struct_info.field_types) |field_name, field_type| {
+            const field_ptr = &@field(result, field_name);
+            switch (field_type) {
                 u16 => field_ptr.* = std.mem.bigToNative(u16, field_ptr.*),
                 u32 => field_ptr.* = std.mem.bigToNative(u32, field_ptr.*),
                 i16 => field_ptr.* = std.mem.bigToNative(i16, field_ptr.*),

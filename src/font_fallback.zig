@@ -57,6 +57,7 @@ pub const FontFallbackChain = struct {
     };
 
     const CharacterCoverage = struct {
+        allocator: std.mem.Allocator,
         unicode_blocks: std.ArrayList(UnicodeBlock),
 
         const UnicodeBlock = struct {
@@ -67,15 +68,16 @@ pub const FontFallbackChain = struct {
 
         pub fn init(allocator: std.mem.Allocator) CharacterCoverage {
             return CharacterCoverage{
-                .unicode_blocks = std.ArrayList(UnicodeBlock).init(allocator),
+                .allocator = allocator,
+                .unicode_blocks = std.ArrayList(UnicodeBlock).empty,
             };
         }
 
         pub fn deinit(self: *CharacterCoverage) void {
             for (self.unicode_blocks.items) |*block| {
-                self.unicode_blocks.allocator.free(block.coverage_bitmap);
+                self.allocator.free(block.coverage_bitmap);
             }
-            self.unicode_blocks.deinit();
+            self.unicode_blocks.deinit(self.allocator);
         }
 
         pub fn hasGlyph(self: *const CharacterCoverage, codepoint: u32) bool {
@@ -128,7 +130,7 @@ pub const FontFallbackChain = struct {
         return Self{
             .allocator = allocator,
             .primary_font = primary_font,
-            .fallback_fonts = std.ArrayList(FallbackFont).init(allocator),
+            .fallback_fonts = std.ArrayList(FallbackFont).empty,
             .script_preferences = std.HashMap(ScriptRange, []const FallbackFont, ScriptContext, std.hash_map.default_max_load_percentage).init(allocator),
             .glyph_cache = std.HashMap(u32, CachedGlyph, GlyphContext, std.hash_map.default_max_load_percentage).init(allocator),
         };
@@ -138,7 +140,7 @@ pub const FontFallbackChain = struct {
         for (self.fallback_fonts.items) |*font| {
             font.deinit(self.allocator);
         }
-        self.fallback_fonts.deinit();
+        self.fallback_fonts.deinit(self.allocator);
         self.script_preferences.deinit();
         self.glyph_cache.deinit();
     }
@@ -148,13 +150,16 @@ pub const FontFallbackChain = struct {
         const system_fonts = getSystemFallbackFonts();
 
         for (system_fonts) |font_info| {
-            var fallback = FallbackFont.init(self.allocator, font_info.path, font_info.priority);
+            // FallbackFont.deinit frees font_path, so it must own a heap copy
+            // rather than the static path literal from getSystemFallbackFonts.
+            const owned_path = try self.allocator.dupe(u8, font_info.path);
+            var fallback = FallbackFont.init(self.allocator, owned_path, font_info.priority);
             fallback.scripts = font_info.scripts;
 
             // TODO: Load actual font and analyze coverage
             // For now, we'll use predefined coverage based on font type
 
-            try self.fallback_fonts.append(fallback);
+            try self.fallback_fonts.append(self.allocator, fallback);
         }
 
         // Sort by priority (higher priority first)
@@ -169,7 +174,7 @@ pub const FontFallbackChain = struct {
     // Find best font for a specific codepoint
     pub fn findFontForCodepoint(self: *Self, codepoint: u32) !*root.FontManager {
         // Check cache first
-        if (self.glyph_cache.get(codepoint)) |cached| {
+        if (self.glyph_cache.getPtr(codepoint)) |cached| {
             cached.last_used = nanoTimestamp();
             if (cached.font_index == 0) {
                 return self.primary_font;
@@ -179,7 +184,7 @@ pub const FontFallbackChain = struct {
         }
 
         // Try primary font first
-        if (try self.primary_font.hasGlyph(codepoint)) {
+        if (self.primary_font.hasGlyph(codepoint)) {
             try self.glyph_cache.put(codepoint, CachedGlyph{
                 .font_index = 0,
                 .glyph_id = 0, // Will be filled when actually rendering
@@ -206,7 +211,7 @@ pub const FontFallbackChain = struct {
 
     // Find best font for text containing multiple scripts
     pub fn findFontsForText(self: *Self, text: []const u8, allocator: std.mem.Allocator) ![]FontRun {
-        var runs = std.ArrayList(FontRun).init(allocator);
+        var runs = std.ArrayList(FontRun).empty;
         var current_font: ?*root.FontManager = null;
         var run_start: usize = 0;
         var i: usize = 0;
@@ -214,7 +219,7 @@ pub const FontFallbackChain = struct {
         while (i < text.len) {
             const char_len = std.unicode.utf8ByteSequenceLength(text[i]) catch 1;
             if (i + char_len <= text.len) {
-                const codepoint = std.unicode.utf8Decode(text[i..i + char_len]) catch {
+                const codepoint = std.unicode.utf8Decode(text[i .. i + char_len]) catch {
                     i += 1;
                     continue;
                 };
@@ -224,7 +229,7 @@ pub const FontFallbackChain = struct {
                 if (current_font != best_font) {
                     // End current run if it exists
                     if (current_font != null) {
-                        try runs.append(FontRun{
+                        try runs.append(allocator, FontRun{
                             .font = current_font.?,
                             .start = run_start,
                             .length = i - run_start,
@@ -244,14 +249,14 @@ pub const FontFallbackChain = struct {
 
         // Add final run
         if (current_font != null and run_start < text.len) {
-            try runs.append(FontRun{
+            try runs.append(allocator, FontRun{
                 .font = current_font.?,
                 .start = run_start,
                 .length = text.len - run_start,
             });
         }
 
-        return runs.toOwnedSlice();
+        return runs.toOwnedSlice(allocator);
     }
 
     pub const FontRun = struct {
@@ -300,13 +305,13 @@ pub const FontFallbackChain = struct {
     // Clean old entries from glyph cache
     pub fn cleanupCache(self: *Self, max_age_ns: i64) void {
         const current_time = nanoTimestamp();
-        var keys_to_remove = std.ArrayList(u32).init(self.allocator);
-        defer keys_to_remove.deinit();
+        var keys_to_remove = std.ArrayList(u32).empty;
+        defer keys_to_remove.deinit(self.allocator);
 
         var iter = self.glyph_cache.iterator();
         while (iter.next()) |entry| {
             if (current_time - entry.value_ptr.last_used > max_age_ns) {
-                keys_to_remove.append(entry.key_ptr.*) catch continue;
+                keys_to_remove.append(self.allocator, entry.key_ptr.*) catch continue;
             }
         }
 

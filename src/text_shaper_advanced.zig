@@ -87,15 +87,16 @@ pub const AdvancedTextShaper = struct {
         };
 
         pub fn init(allocator: std.mem.Allocator) @This() {
+            _ = allocator;
             return @This(){
-                .glyphs = std.ArrayList(GlyphInfo).init(allocator),
-                .positions = std.ArrayList(GlyphPosition).init(allocator),
+                .glyphs = std.ArrayList(GlyphInfo).empty,
+                .positions = std.ArrayList(GlyphPosition).empty,
             };
         }
 
-        pub fn deinit(self: *@This()) void {
-            self.glyphs.deinit();
-            self.positions.deinit();
+        pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+            self.glyphs.deinit(allocator);
+            self.positions.deinit(allocator);
         }
 
         pub fn clear(self: *@This()) void {
@@ -103,13 +104,13 @@ pub const AdvancedTextShaper = struct {
             self.positions.clearRetainingCapacity();
         }
 
-        pub fn addGlyph(self: *@This(), codepoint: u32, cluster: u32) !void {
-            try self.glyphs.append(GlyphInfo{
+        pub fn addGlyph(self: *@This(), allocator: std.mem.Allocator, codepoint: u32, cluster: u32) !void {
+            try self.glyphs.append(allocator, GlyphInfo{
                 .codepoint = codepoint,
                 .glyph_index = 0, // Will be filled by font
                 .cluster = cluster,
             });
-            try self.positions.append(GlyphPosition{});
+            try self.positions.append(allocator, GlyphPosition{});
         }
 
         pub fn len(self: *const @This()) usize {
@@ -217,7 +218,7 @@ pub const AdvancedTextShaper = struct {
             .allocator = allocator,
             .font_parser = font_parser,
             .buffer = ShapingBuffer.init(allocator),
-            .features = std.ArrayList(FeatureTag).init(allocator),
+            .features = std.ArrayList(FeatureTag).empty,
         };
 
         // Initialize OpenType tables
@@ -231,8 +232,8 @@ pub const AdvancedTextShaper = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        self.buffer.deinit();
-        self.features.deinit();
+        self.buffer.deinit(self.allocator);
+        self.features.deinit(self.allocator);
         if (self.gsub_table) |*gsub| gsub.deinit();
         if (self.gpos_table) |*gpos| gpos.deinit();
     }
@@ -307,13 +308,13 @@ pub const AdvancedTextShaper = struct {
 
     fn addDefaultFeatures(self: *Self) !void {
         // Add default features for Latin text
-        try self.features.append(.kern);
-        try self.features.append(.liga);
-        try self.features.append(.clig);
+        try self.features.append(self.allocator, .kern);
+        try self.features.append(self.allocator, .liga);
+        try self.features.append(self.allocator, .clig);
 
         // Programming-specific features
-        try self.features.append(.zero);
-        try self.features.append(.ss01);
+        try self.features.append(self.allocator, .zero);
+        try self.features.append(self.allocator, .ss01);
     }
 
     pub fn addFeature(self: *Self, feature: FeatureTag) !void {
@@ -321,7 +322,7 @@ pub const AdvancedTextShaper = struct {
         for (self.features.items) |existing| {
             if (existing == feature) return;
         }
-        try self.features.append(feature);
+        try self.features.append(self.allocator, feature);
     }
 
     pub fn removeFeature(self: *Self, feature: FeatureTag) void {
@@ -343,13 +344,13 @@ pub const AdvancedTextShaper = struct {
         while (i < text.len) {
             const char_len = std.unicode.utf8ByteSequenceLength(text[i]) catch 1;
             if (i + char_len <= text.len) {
-                const codepoint = std.unicode.utf8Decode(text[i..i + char_len]) catch {
+                const codepoint = std.unicode.utf8Decode(text[i .. i + char_len]) catch {
                     i += 1;
                     cluster += 1;
                     continue;
                 };
 
-                try self.buffer.addGlyph(codepoint, cluster);
+                try self.buffer.addGlyph(self.allocator, codepoint, cluster);
                 i += char_len;
                 cluster += 1;
             } else {
@@ -382,11 +383,11 @@ pub const AdvancedTextShaper = struct {
             var found_ligature = false;
 
             while (max_len >= 2) : (max_len -= 1) {
-                var components = std.ArrayList(u32).init(self.allocator);
-                defer components.deinit();
+                var components = std.ArrayList(u32).empty;
+                defer components.deinit(self.allocator);
 
-                for (self.buffer.glyphs.items[i..i + max_len]) |glyph| {
-                    try components.append(glyph.codepoint);
+                for (self.buffer.glyphs.items[i .. i + max_len]) |glyph| {
+                    try components.append(self.allocator, glyph.codepoint);
                 }
 
                 if (gsub.findLigature(components.items)) |ligature_glyph| {
@@ -418,7 +419,7 @@ pub const AdvancedTextShaper = struct {
         const gpos = &self.gpos_table.?;
 
         // Apply kerning
-        for (self.buffer.glyphs.items[0..self.buffer.glyphs.items.len - 1], 0..) |glyph, i| {
+        for (self.buffer.glyphs.items[0 .. self.buffer.glyphs.items.len - 1], 0..) |glyph, i| {
             const next_glyph = self.buffer.glyphs.items[i + 1];
             const kerning = gpos.getKerning(glyph.glyph_index, next_glyph.glyph_index);
 
@@ -440,27 +441,27 @@ pub const AdvancedTextShaper = struct {
 
         switch (script) {
             .latin => {
-                try self.features.append(.kern);
-                try self.features.append(.liga);
-                try self.features.append(.clig);
-                try self.features.append(.zero);
+                try self.features.append(self.allocator, .kern);
+                try self.features.append(self.allocator, .liga);
+                try self.features.append(self.allocator, .clig);
+                try self.features.append(self.allocator, .zero);
             },
             .arabic => {
-                try self.features.append(.init);
-                try self.features.append(.medi);
-                try self.features.append(.fina);
-                try self.features.append(.isol);
-                try self.features.append(.mark);
-                try self.features.append(.mkmk);
+                try self.features.append(self.allocator, .init);
+                try self.features.append(self.allocator, .medi);
+                try self.features.append(self.allocator, .fina);
+                try self.features.append(self.allocator, .isol);
+                try self.features.append(self.allocator, .mark);
+                try self.features.append(self.allocator, .mkmk);
             },
             .devanagari => {
-                try self.features.append(.nukt);
-                try self.features.append(.akhn);
-                try self.features.append(.rphf);
-                try self.features.append(.blwf);
-                try self.features.append(.half);
-                try self.features.append(.pstf);
-                try self.features.append(.vatu);
+                try self.features.append(self.allocator, .nukt);
+                try self.features.append(self.allocator, .akhn);
+                try self.features.append(self.allocator, .rphf);
+                try self.features.append(self.allocator, .blwf);
+                try self.features.append(self.allocator, .half);
+                try self.features.append(self.allocator, .pstf);
+                try self.features.append(self.allocator, .vatu);
             },
         }
     }

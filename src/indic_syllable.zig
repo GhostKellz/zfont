@@ -6,7 +6,7 @@ const gcode = @import("gcode");
 // Handles Devanagari, Bengali, Tamil, Telugu, Kannada, Malayalam, etc.
 pub const IndicSyllableProcessor = struct {
     allocator: std.mem.Allocator,
-    complex_analyzer: gcode.complex_script.ComplexScriptAnalyzer,
+    complex_analyzer: gcode.ComplexScriptAnalyzer,
     syllable_table: SyllableTable,
 
     const Self = @This();
@@ -54,8 +54,8 @@ pub const IndicSyllableProcessor = struct {
         // Special marks
         nukta = 30,
         halant = 31, // Virama
-        zwj = 32,    // Zero Width Joiner
-        zwnj = 33,   // Zero Width Non-Joiner
+        zwj = 32, // Zero Width Joiner
+        zwnj = 33, // Zero Width Non-Joiner
 
         // Numbers and symbols
         number = 40,
@@ -85,7 +85,7 @@ pub const IndicSyllableProcessor = struct {
     pub fn init(allocator: std.mem.Allocator) !Self {
         var processor = Self{
             .allocator = allocator,
-            .complex_analyzer = try gcode.complex_script.ComplexScriptAnalyzer.init(allocator),
+            .complex_analyzer = gcode.ComplexScriptAnalyzer.init(allocator),
             .syllable_table = SyllableTable.init(allocator),
         };
 
@@ -94,7 +94,6 @@ pub const IndicSyllableProcessor = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        self.complex_analyzer.deinit();
         self.syllable_table.deinit();
     }
 
@@ -117,35 +116,35 @@ pub const IndicSyllableProcessor = struct {
     }
 
     pub fn processSyllables(self: *Self, text: []const u8) !IndicSyllableResult {
-        // Use gcode to analyze the text for Indic script properties
-        const analyses = try self.complex_analyzer.analyzeText(text);
-        defer self.allocator.free(analyses);
-
         var result = IndicSyllableResult.init(self.allocator);
 
         // Convert text to codepoints
-        var codepoints = std.ArrayList(u32).init(self.allocator);
-        defer codepoints.deinit();
+        var codepoints = std.ArrayList(u32).empty;
+        defer codepoints.deinit(self.allocator);
 
         var i: usize = 0;
         while (i < text.len) {
             const char_len = std.unicode.utf8ByteSequenceLength(text[i]) catch 1;
             if (i + char_len <= text.len) {
-                const codepoint = std.unicode.utf8Decode(text[i..i + char_len]) catch {
+                const codepoint = std.unicode.utf8Decode(text[i .. i + char_len]) catch {
                     i += 1;
                     continue;
                 };
-                try codepoints.append(codepoint);
+                try codepoints.append(self.allocator, codepoint);
                 i += char_len;
             } else {
                 break;
             }
         }
 
+        // Use gcode to analyze the decoded codepoints (analyzeText expects []const u32)
+        const analyses = try self.complex_analyzer.analyzeText(codepoints.items);
+        defer self.allocator.free(analyses);
+
         // Process syllables using gcode analysis
         var syllable_start: usize = 0;
-        var current_syllable = std.ArrayList(IndicCharacter).init(self.allocator);
-        defer current_syllable.deinit();
+        var current_syllable = std.ArrayList(IndicCharacter).empty;
+        defer current_syllable.deinit(self.allocator);
 
         for (codepoints.items, 0..) |codepoint, pos| {
             if (pos < analyses.len) {
@@ -165,38 +164,48 @@ pub const IndicSyllableProcessor = struct {
                     if (current_syllable.items.len > 0) {
                         // Complete current syllable
                         const syllable = try self.formSyllable(current_syllable.items, syllable_start);
-                        try result.syllables.append(syllable);
+                        try result.syllables.append(self.allocator, syllable);
                         current_syllable.clearRetainingCapacity();
                         syllable_start = pos;
                     }
                 }
 
-                try current_syllable.append(indic_char);
+                try current_syllable.append(self.allocator, indic_char);
             }
         }
 
         // Process final syllable
         if (current_syllable.items.len > 0) {
             const syllable = try self.formSyllable(current_syllable.items, syllable_start);
-            try result.syllables.append(syllable);
+            try result.syllables.append(self.allocator, syllable);
         }
 
         return result;
     }
 
-    fn classifyIndicCharacter(self: *Self, codepoint: u32, analysis: gcode.complex_script.ComplexScriptAnalysis) IndicCategory {
+    fn classifyIndicCharacter(self: *Self, codepoint: u32, analysis: gcode.ComplexScriptAnalysis) IndicCategory {
 
-        // Use gcode analysis for classification
-        if (analysis.is_consonant) {
-            if (analysis.has_below_base_form) return .consonant_below_base;
-            if (analysis.has_above_base_form) return .consonant_above_base;
-            if (analysis.has_post_base_form) return .consonant_post_base;
-            return .consonant;
-        }
-
-        if (analysis.is_vowel) {
-            if (analysis.is_dependent_vowel) return .vowel_dependent;
-            return .vowel_independent;
+        // Use gcode analysis for classification by switching on the real
+        // IndicCategory enum (gcode does not expose boolean predicates).
+        if (analysis.indic_category) |cat| {
+            switch (cat) {
+                .consonant,
+                .consonant_dead,
+                .consonant_with_stacker,
+                .consonant_prefixed,
+                .consonant_preceding_repha,
+                .consonant_succeeding_repha,
+                => return .consonant,
+                .vowel_independent => return .vowel_independent,
+                .vowel_dependent => return .vowel_dependent,
+                .nukta => return .nukta,
+                .virama, .invisible_stacker => return .halant,
+                .number => return .number,
+                .symbol => return .symbol,
+                // tone/stress/cantillation marks and anything else fall through
+                // to range-based and special-mark classification below.
+                else => {},
+            }
         }
 
         // Specific Indic character ranges
@@ -229,12 +238,12 @@ pub const IndicSyllableProcessor = struct {
 
             // Dependent vowel signs (matras)
             0x093E => .matra_post, // AA
-            0x093F => .matra_pre,  // I
+            0x093F => .matra_pre, // I
             0x0940 => .matra_post, // II
             0x0941, 0x0942 => .matra_below, // U, UU
             0x0943, 0x0944 => .matra_below, // R, RR
             0x0945...0x0948 => .matra_above, // E vowels
-            0x0949...0x094C => .matra_post,  // O vowels
+            0x0949...0x094C => .matra_post, // O vowels
 
             // Special marks
             0x093C => .nukta,
@@ -258,12 +267,12 @@ pub const IndicSyllableProcessor = struct {
 
             // Dependent vowel signs
             0x09BE => .matra_post, // AA
-            0x09BF => .matra_pre,  // I
+            0x09BF => .matra_pre, // I
             0x09C0 => .matra_post, // II
             0x09C1, 0x09C2 => .matra_below, // U, UU
             0x09C3, 0x09C4 => .matra_below, // R, RR
-            0x09C7, 0x09C8 => .matra_pre,   // E vowels
-            0x09CB, 0x09CC => .matra_post,  // O vowels
+            0x09C7, 0x09C8 => .matra_pre, // E vowels
+            0x09CB, 0x09CC => .matra_post, // O vowels
 
             // Special marks
             0x09BC => .nukta,
@@ -284,11 +293,11 @@ pub const IndicSyllableProcessor = struct {
 
             // Dependent vowel signs
             0x0BBE => .matra_post, // AA
-            0x0BBF => .matra_pre,  // I
+            0x0BBF => .matra_pre, // I
             0x0BC0 => .matra_post, // II
             0x0BC1, 0x0BC2 => .matra_below, // U, UU
-            0x0BC6...0x0BC8 => .matra_pre,   // E vowels
-            0x0BCA...0x0BCC => .matra_post,  // O vowels
+            0x0BC6...0x0BC8 => .matra_pre, // E vowels
+            0x0BCA...0x0BCC => .matra_post, // O vowels
 
             // Special marks
             0x0BCD => .halant,
@@ -328,7 +337,7 @@ pub const IndicSyllableProcessor = struct {
             .characters = try self.allocator.dupe(IndicCharacter, chars),
             .start_position = start_pos,
             .base_character = null,
-            .reordered_characters = std.ArrayList(IndicCharacter).init(self.allocator),
+            .reordered_characters = std.ArrayList(IndicCharacter).empty,
         };
 
         // Find base character (usually the first consonant)
@@ -348,15 +357,15 @@ pub const IndicSyllableProcessor = struct {
     fn reorderSyllable(self: *Self, syllable: *IndicSyllable) !void {
 
         // Sort characters by reorder class
-        var temp_chars = std.ArrayList(IndicCharacter).init(self.allocator);
-        defer temp_chars.deinit();
+        var temp_chars = std.ArrayList(IndicCharacter).empty;
+        defer temp_chars.deinit(self.allocator);
 
-        try temp_chars.appendSlice(syllable.characters);
+        try temp_chars.appendSlice(self.allocator, syllable.characters);
 
         // Simple reordering by reorder class
         std.sort.insertion(IndicCharacter, temp_chars.items, {}, compareReorderClass);
 
-        try syllable.reordered_characters.appendSlice(temp_chars.items);
+        try syllable.reordered_characters.appendSlice(self.allocator, temp_chars.items);
     }
 
     fn compareReorderClass(_: void, a: IndicCharacter, b: IndicCharacter) bool {
@@ -366,10 +375,10 @@ pub const IndicSyllableProcessor = struct {
     // Test with real Indic text
     pub fn testIndicProcessing(self: *Self) !void {
         const test_texts = [_][]const u8{
-            "नमस्ते",        // Devanagari: "Namaste"
-            "স্বাগতম",      // Bengali: "Welcome"
-            "வணக்கம்",      // Tamil: "Vanakkam"
-            "ನಮಸ್ಕಾರ",      // Kannada: "Namaskara"
+            "नमस्ते", // Devanagari: "Namaste"
+            "স্বাগতম", // Bengali: "Welcome"
+            "வணக்கம்", // Tamil: "Vanakkam"
+            "ನಮಸ್ಕಾರ", // Kannada: "Namaskara"
         };
 
         for (test_texts) |text| {
@@ -381,19 +390,10 @@ pub const IndicSyllableProcessor = struct {
             std.log.info("Found {} syllables", .{result.syllables.items.len});
 
             for (result.syllables.items, 0..) |syllable, i| {
-                std.log.info("Syllable {}: {} characters, base: {?}", .{
-                    i,
-                    syllable.characters.len,
-                    syllable.base_character
-                });
+                std.log.info("Syllable {}: {} characters, base: {?}", .{ i, syllable.characters.len, syllable.base_character });
 
                 for (syllable.reordered_characters.items) |char| {
-                    std.log.info("  Char U+{X} ({}) - pos: {} reorder: {}", .{
-                        char.codepoint,
-                        @tagName(char.category),
-                        @tagName(char.syllable_position),
-                        char.reorder_class
-                    });
+                    std.log.info("  Char U+{X} ({s}) - pos: {s} reorder: {}", .{ char.codepoint, @tagName(char.category), @tagName(char.syllable_position), char.reorder_class });
                 }
             }
         }
@@ -416,7 +416,7 @@ pub const IndicSyllable = struct {
 
     pub fn deinit(self: *IndicSyllable, allocator: std.mem.Allocator) void {
         allocator.free(self.characters);
-        self.reordered_characters.deinit();
+        self.reordered_characters.deinit(allocator);
     }
 };
 
@@ -426,7 +426,7 @@ pub const IndicSyllableResult = struct {
 
     pub fn init(allocator: std.mem.Allocator) IndicSyllableResult {
         return IndicSyllableResult{
-            .syllables = std.ArrayList(IndicSyllable).init(allocator),
+            .syllables = std.ArrayList(IndicSyllable).empty,
             .allocator = allocator,
         };
     }
@@ -435,7 +435,7 @@ pub const IndicSyllableResult = struct {
         for (self.syllables.items) |*syllable| {
             syllable.deinit(self.allocator);
         }
-        self.syllables.deinit();
+        self.syllables.deinit(self.allocator);
     }
 };
 

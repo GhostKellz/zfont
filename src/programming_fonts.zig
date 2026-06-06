@@ -246,7 +246,7 @@ pub const ProgrammingFontManager = struct {
 
         for (programming_font_names) |font_name| {
             if (try font_manager.findFont(font_name, .{ .size = 12.0 })) |font| {
-                try self.programming_fonts.append(font);
+                try self.programming_fonts.append(self.allocator, font);
             }
         }
     }
@@ -282,7 +282,7 @@ pub const ProgrammingFontManager = struct {
 
             if (best_ligature) |lig_info| {
                 if (options.enable_ligatures) {
-                    try result.ligatures.append(LigatureMatch{
+                    try result.ligatures.append(result.allocator, LigatureMatch{
                         .position = i,
                         .length = max_length,
                         .replacement_glyph = lig_info.replacement_glyph,
@@ -299,7 +299,7 @@ pub const ProgrammingFontManager = struct {
             if (!found_ligature) {
                 // No ligature found, process as regular character
                 const char = text[i - 1];
-                try result.characters.append(char);
+                try result.characters.append(result.allocator, char);
             }
         }
 
@@ -329,16 +329,16 @@ pub const ProgrammingFontManager = struct {
     }
 
     pub fn getIconsInCategory(self: *Self, category: IconCategory) ![]NerdFontIcon {
-        var icons = std.ArrayList(NerdFontIcon).init(self.allocator);
+        var icons = std.ArrayList(NerdFontIcon).empty;
 
         var iterator = self.nerd_font_map.iterator();
         while (iterator.next()) |entry| {
             if (entry.value_ptr.category == category) {
-                try icons.append(entry.value_ptr.*);
+                try icons.append(self.allocator, entry.value_ptr.*);
             }
         }
 
-        return icons.toOwnedSlice();
+        return icons.toOwnedSlice(self.allocator);
     }
 
     pub fn isMonospaceFont(self: *Self, font: *Font) bool {
@@ -475,8 +475,8 @@ pub const LigatureResult = struct {
     }
 
     pub fn deinit(self: *LigatureResult) void {
-        self.ligatures.deinit();
-        self.characters.deinit();
+        self.ligatures.deinit(self.allocator);
+        self.characters.deinit(self.allocator);
     }
 };
 

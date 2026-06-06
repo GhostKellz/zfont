@@ -3,11 +3,19 @@ const root = @import("root.zig");
 const gcode = @import("gcode");
 const Unicode = @import("unicode.zig").Unicode;
 
+// std.time.milliTimestamp/nanoTimestamp were removed in the std.Io overhaul.
+// Provide a monotonic millisecond clock for cache TTL bookkeeping.
+fn milliTimestamp() i64 {
+    var ts: std.os.linux.timespec = undefined;
+    _ = std.os.linux.clock_gettime(.MONOTONIC, &ts);
+    return @as(i64, ts.sec) * 1000 + @divFloor(@as(i64, @intCast(ts.nsec)), std.time.ns_per_ms);
+}
+
 // Terminal scrolling performance optimizer using gcode intelligence
 // Optimizes text processing for high-speed terminal operations
 pub const TerminalPerformanceOptimizer = struct {
     allocator: std.mem.Allocator,
-    script_detector: gcode.script.ScriptDetector,
+    script_detector: gcode.ScriptDetector,
     cache: RenderCache,
     settings: OptimizationSettings,
     east_asian_mode: Unicode.EastAsianWidthMode,
@@ -70,10 +78,10 @@ pub const TerminalPerformanceOptimizer = struct {
     };
 
     pub const ScriptRun = struct {
-        script: gcode.script.Script,
+        script: gcode.Script,
         start: usize,
         length: usize,
-        direction: gcode.bidi.Direction,
+        direction: gcode.Direction,
         complexity: ComplexityLevel,
     };
 
@@ -87,7 +95,7 @@ pub const TerminalPerformanceOptimizer = struct {
     pub fn init(allocator: std.mem.Allocator, settings: OptimizationSettings) !Self {
         return Self{
             .allocator = allocator,
-            .script_detector = try gcode.script.ScriptDetector.init(allocator),
+            .script_detector = gcode.ScriptDetector.init(allocator),
             .cache = RenderCache.init(allocator),
             .settings = settings,
             .east_asian_mode = settings.east_asian_width_mode,
@@ -95,7 +103,6 @@ pub const TerminalPerformanceOptimizer = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        self.script_detector.deinit();
         self.clearCache();
         self.cache.deinit();
     }
@@ -150,8 +157,8 @@ pub const TerminalPerformanceOptimizer = struct {
         var has_non_ascii = false;
         var has_rtl = false;
         var has_complex_scripts = false;
-        var scripts_seen = std.ArrayList(gcode.script.Script).init(self.allocator);
-        defer scripts_seen.deinit();
+        var scripts_seen = std.ArrayList(gcode.Script).empty;
+        defer scripts_seen.deinit(self.allocator);
 
         var byte_pos: usize = 0;
         var char_count: usize = 0;
@@ -211,7 +218,7 @@ pub const TerminalPerformanceOptimizer = struct {
         // Simple line breaking - just split on newlines and terminal width
         const visible_text = text[viewport_start..@min(viewport_end, text.len)];
 
-        var lines = std.ArrayList(LineSegment).init(self.allocator);
+        var lines = std.ArrayList(LineSegment).empty;
         var line_start: usize = 0;
         var current_width: u32 = 0;
 
@@ -230,7 +237,7 @@ pub const TerminalPerformanceOptimizer = struct {
                     .needs_bidi = false,
                     .needs_shaping = false,
                 };
-                try lines.append(segment);
+                try lines.append(self.allocator, segment);
 
                 line_start = i + 1;
                 current_width = 0;
@@ -252,10 +259,10 @@ pub const TerminalPerformanceOptimizer = struct {
                 .needs_bidi = false,
                 .needs_shaping = false,
             };
-            try lines.append(segment);
+            try lines.append(self.allocator, segment);
         }
 
-        result.line_segments = try lines.toOwnedSlice();
+        result.line_segments = try lines.toOwnedSlice(self.allocator);
         result.total_lines = @intCast(result.line_segments.len);
         result.optimization_level = .simple;
 
@@ -268,15 +275,33 @@ pub const TerminalPerformanceOptimizer = struct {
 
         // Use script detection for better line breaking
         const visible_text = text[viewport_start..@min(viewport_end, text.len)];
-        const script_runs = try self.script_detector.detectRuns(visible_text);
+
+        // Decode UTF-8 into codepoints; gcode detectRuns expects []const u32.
+        var codepoints = std.ArrayList(u32).empty;
+        defer codepoints.deinit(self.allocator);
+        {
+            var byte_index: usize = 0;
+            while (byte_index < visible_text.len) {
+                const char_len = std.unicode.utf8ByteSequenceLength(visible_text[byte_index]) catch 1;
+                if (byte_index + char_len > visible_text.len) break;
+                const cp = std.unicode.utf8Decode(visible_text[byte_index .. byte_index + char_len]) catch {
+                    byte_index += 1;
+                    continue;
+                };
+                try codepoints.append(self.allocator, cp);
+                byte_index += char_len;
+            }
+        }
+
+        const script_runs = try self.script_detector.detectRuns(codepoints.items);
         defer self.allocator.free(script_runs);
 
-        var lines = std.ArrayList(LineSegment).init(self.allocator);
+        var lines = std.ArrayList(LineSegment).empty;
         var current_line_start: usize = 0;
         var current_width: f32 = 0;
 
         for (script_runs) |run| {
-            const run_width = self.estimateRunWidth(run);
+            const run_width = self.estimateRunWidth(run, codepoints.items);
 
             // Check if run fits on current line
             if (terminal_width > 0 and current_width + run_width > @as(f32, @floatFromInt(terminal_width)) and current_width > 0) {
@@ -294,7 +319,7 @@ pub const TerminalPerformanceOptimizer = struct {
             try self.completeLine(&lines, visible_text, current_line_start, visible_text.len, viewport_start, script_runs, .moderate);
         }
 
-        result.line_segments = try lines.toOwnedSlice();
+        result.line_segments = try lines.toOwnedSlice(self.allocator);
         result.total_lines = @intCast(result.line_segments.len);
         result.optimization_level = .moderate;
 
@@ -307,33 +332,50 @@ pub const TerminalPerformanceOptimizer = struct {
 
         const visible_text = text[viewport_start..@min(viewport_end, text.len)];
 
+        // Decode UTF-8 into codepoints; gcode detectRuns/processText expect []const u32.
+        var codepoints = std.ArrayList(u32).empty;
+        defer codepoints.deinit(self.allocator);
+        {
+            var byte_index: usize = 0;
+            while (byte_index < visible_text.len) {
+                const char_len = std.unicode.utf8ByteSequenceLength(visible_text[byte_index]) catch 1;
+                if (byte_index + char_len > visible_text.len) break;
+                const cp = std.unicode.utf8Decode(visible_text[byte_index .. byte_index + char_len]) catch {
+                    byte_index += 1;
+                    continue;
+                };
+                try codepoints.append(self.allocator, cp);
+                byte_index += char_len;
+            }
+        }
+
         // Use gcode for comprehensive analysis
-        const script_runs = try self.script_detector.detectRuns(visible_text);
+        const script_runs = try self.script_detector.detectRuns(codepoints.items);
         defer self.allocator.free(script_runs);
 
         // Perform BiDi analysis if needed
-        var bidi_runs: []gcode.bidi.BiDiRun = &[_]gcode.bidi.BiDiRun{};
+        var bidi_runs: []gcode.Run = &[_]gcode.Run{};
         var needs_bidi = false;
 
         for (script_runs) |run| {
-            if (run.script_info.writing_direction == .rtl) {
+            if (run.script.isRTL()) {
                 needs_bidi = true;
                 break;
             }
         }
 
         if (needs_bidi) {
-            const bidi_processor = try gcode.bidi.BiDi.init(self.allocator);
-            defer bidi_processor.deinit();
-            bidi_runs = try bidi_processor.processText(visible_text, .auto);
+            var bidi_processor = gcode.BiDi.init(self.allocator);
+            const base_dir = bidi_processor.getBaseDirection(codepoints.items);
+            bidi_runs = try bidi_processor.processText(codepoints.items, base_dir);
         }
 
-        var lines = std.ArrayList(LineSegment).init(self.allocator);
+        var lines = std.ArrayList(LineSegment).empty;
         var current_line_start: usize = 0;
         var current_width: f32 = 0;
 
         for (script_runs) |run| {
-            const run_width = self.estimateComplexRunWidth(run);
+            const run_width = self.estimateComplexRunWidth(run, codepoints.items);
 
             if (terminal_width > 0 and current_width + run_width > @as(f32, @floatFromInt(terminal_width)) and current_width > 0) {
                 try self.completeComplexLine(&lines, visible_text, current_line_start, run.start, viewport_start, script_runs, bidi_runs);
@@ -353,19 +395,33 @@ pub const TerminalPerformanceOptimizer = struct {
             self.allocator.free(bidi_runs);
         }
 
-        result.line_segments = try lines.toOwnedSlice();
+        result.line_segments = try lines.toOwnedSlice(self.allocator);
         result.total_lines = @intCast(result.line_segments.len);
         result.optimization_level = if (needs_bidi) .very_complex else .complex;
 
         return result;
     }
 
-    fn estimateRunWidth(self: *Self, run: gcode.script.ScriptRun) f32 {
-        return @as(f32, @floatFromInt(self.measureColumns(run.text)));
+    // gcode.ScriptRun carries only script/start/length (codepoint indices), not the
+    // backing text. Width is computed directly from the decoded codepoint slice.
+    fn estimateRunWidth(self: *Self, run: gcode.ScriptRun, codepoints: []const u32) f32 {
+        _ = self;
+        return runColumns(run, codepoints);
     }
 
-    fn estimateComplexRunWidth(self: *Self, run: gcode.script.ScriptRun) f32 {
-        return @as(f32, @floatFromInt(self.measureColumns(run.text)));
+    fn estimateComplexRunWidth(self: *Self, run: gcode.ScriptRun, codepoints: []const u32) f32 {
+        _ = self;
+        return runColumns(run, codepoints);
+    }
+
+    fn runColumns(run: gcode.ScriptRun, codepoints: []const u32) f32 {
+        const start = @min(run.start, codepoints.len);
+        const end = @min(run.start + run.length, codepoints.len);
+        var width: f32 = 0;
+        for (codepoints[start..end]) |cp| {
+            width += @as(f32, @floatFromInt(gcode.getWidth(@intCast(cp))));
+        }
+        return width;
     }
 
     fn measureColumns(self: *Self, text: []const u8) usize {
@@ -373,7 +429,7 @@ pub const TerminalPerformanceOptimizer = struct {
         return Unicode.stringWidthWithMode(text, self.east_asian_mode);
     }
 
-    fn completeLine(self: *Self, lines: *std.ArrayList(LineSegment), text: []const u8, start: usize, end: usize, offset: usize, _: []const gcode.script.ScriptRun, complexity: ComplexityLevel) !void {
+    fn completeLine(self: *Self, lines: *std.ArrayList(LineSegment), text: []const u8, start: usize, end: usize, offset: usize, _: []const gcode.ScriptRun, complexity: ComplexityLevel) !void {
         const line_text = text[start..end];
         const segment = LineSegment{
             .text = line_text,
@@ -385,10 +441,10 @@ pub const TerminalPerformanceOptimizer = struct {
             .needs_bidi = false,
             .needs_shaping = complexity != .simple,
         };
-        try lines.append(segment);
+        try lines.append(self.allocator, segment);
     }
 
-    fn completeComplexLine(self: *Self, lines: *std.ArrayList(LineSegment), text: []const u8, start: usize, end: usize, offset: usize, _: []const gcode.script.ScriptRun, _: []const gcode.bidi.BiDiRun) !void {
+    fn completeComplexLine(self: *Self, lines: *std.ArrayList(LineSegment), text: []const u8, start: usize, end: usize, offset: usize, _: []const gcode.ScriptRun, _: []const gcode.Run) !void {
         const line_text = text[start..end];
         const segment = LineSegment{
             .text = line_text,
@@ -400,7 +456,7 @@ pub const TerminalPerformanceOptimizer = struct {
             .needs_bidi = true,
             .needs_shaping = true,
         };
-        try lines.append(segment);
+        try lines.append(self.allocator, segment);
     }
 
     fn createCacheKey(self: *Self, text: []const u8, font_size: u32, terminal_width: u32) CacheKey {
@@ -417,7 +473,7 @@ pub const TerminalPerformanceOptimizer = struct {
     }
 
     fn isCacheValid(self: *Self, cached: CachedRenderData) bool {
-        const now = std.time.milliTimestamp();
+        const now = milliTimestamp();
         return (now - cached.timestamp) < self.settings.cache_ttl_ms;
     }
 
@@ -446,27 +502,28 @@ pub const TerminalPerformanceOptimizer = struct {
             .total_lines = result.total_lines,
             .requires_complex_shaping = result.optimization_level != .simple,
             .has_bidi_content = result.optimization_level == .very_complex,
-            .timestamp = std.time.milliTimestamp(),
+            .timestamp = milliTimestamp(),
         };
 
         try self.cache.put(key, cached_data);
     }
 
     fn cleanOldCacheEntries(self: *Self) !void {
-        const now = std.time.milliTimestamp();
-        var entries_to_remove = std.ArrayList(CacheKey).init(self.allocator);
-        defer entries_to_remove.deinit();
+        const now = milliTimestamp();
+        var entries_to_remove = std.ArrayList(CacheKey).empty;
+        defer entries_to_remove.deinit(self.allocator);
 
         var iterator = self.cache.iterator();
         while (iterator.next()) |entry| {
             if ((now - entry.value_ptr.timestamp) > self.settings.cache_ttl_ms) {
-                try entries_to_remove.append(entry.key_ptr.*);
+                try entries_to_remove.append(self.allocator, entry.key_ptr.*);
             }
         }
 
         for (entries_to_remove.items) |key| {
             if (self.cache.fetchRemove(key)) |kv| {
-                self.deallocateCachedData(&kv.value);
+                var value = kv.value;
+                self.deallocateCachedData(&value);
             }
         }
     }
@@ -509,12 +566,12 @@ pub const TerminalPerformanceOptimizer = struct {
         for (test_texts, 0..) |text, i| {
             std.log.info("Testing performance optimization {}: {s}", .{ i + 1, text });
 
-            const start = std.time.milliTimestamp();
+            const start = milliTimestamp();
             var result = try self.optimizeTextForScrolling(text, 0, text.len, 80, 16.0);
             defer result.deinit();
-            const end = std.time.milliTimestamp();
+            const end = milliTimestamp();
 
-            std.log.info("  Optimization level: {}, Lines: {}, Time: {}ms", .{ @tagName(result.optimization_level), result.total_lines, end - start });
+            std.log.info("  Optimization level: {s}, Lines: {}, Time: {}ms", .{ @tagName(result.optimization_level), result.total_lines, end - start });
         }
     }
 };
