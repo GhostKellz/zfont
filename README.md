@@ -24,39 +24,25 @@ to change!
 
 ## 🚀 Features
 
-### 🌍 World-Class Unicode Support (via gcode)
-- **BiDi Text Processing**: Perfect Arabic/Hebrew RTL support (UAX #9)
-- **Complex Script Shaping**: Indic syllable formation (Devanagari, Bengali, Tamil)
-- **Arabic Contextual Forms**: Complete isolated/initial/medial/final processing
-- **CJK Width Handling**: Proper fullwidth/halfwidth character support
-- **Advanced Word Boundaries**: UAX #29 compliant word/sentence detection
-- **Perfect Emoji Sequences**: ZWJ, flags, skin tones, complex combinations
+### Current Focus
+- **gcode integration**: Terminal-oriented Unicode semantics, display width, grapheme-aware helpers, and text-processing experiments.
+- **Font metadata and layout experiments**: Font manager, parser, glyph, layout, shaping, and terminal helper APIs are present but still evolving.
+- **Terminal workflows**: Cursor movement, CJK width handling, emoji sequence handling, and terminal text helpers are active development areas.
+- **Pure Zig direction**: The project is exploring font parsing/layout/rendering without C dependencies, but it is not yet a complete FreeType/HarfBuzz/Pango replacement.
 
-### ⚡ Terminal Optimization
-- **Intelligent Cursor Positioning**: Complex text-aware cursor movement
-- **Performance-Optimized Scrolling**: Smart caching for high-speed terminals
-- **Script-Aware Rendering**: Automatic optimization based on text complexity
-- **Mixed-Script Handling**: Seamless LTR/RTL text in the same line
-
-### 🎨 Font Rendering
-- **Font Loading & Rendering**: Complete TrueType/OpenType support
-- **Text Layout Engine**: Advanced text shaping and layout capabilities
-- **Programming Fonts**: Native support for ligatures and coding-specific fonts
-- **Nerd Fonts Integration**: Built-in support for icon fonts and developer symbols
-- **Subpixel Rendering**: High-quality font rendering with hinting support
-
-### 🚀 Pure Zig Implementation
-- **Zero C Dependencies**: No more HarfBuzz, ICU, or FreeType
-- **Memory Safe**: Zig's safety guarantees throughout
-- **Performance**: O(1) text processing with intelligent caching
+### Experimental Areas
+- **BiDi and complex shaping**: Arabic, Indic, mixed-script, and BiDi processors exist, but full UAX #9 and HarfBuzz-class shaping are not yet guaranteed.
+- **TrueType/OpenType parsing**: Several table parsers and glyph paths still need fixture-backed completion.
+- **Emoji and color glyph rendering**: Fallback rendering exists, but full color glyph table support is not complete.
+- **GPU/cache/rendering paths**: GPU-related resource handles and rendering paths are research surfaces until real backend lifecycle tests exist.
 
 ## 🎯 Project Goals
 
-ZFont aims to provide a complete font rendering solution by replacing traditional C libraries:
+ZFont aims to grow toward a pure-Zig font and text stack. These are goals, not current production guarantees:
 
-- **FreeType** → Pure Zig font loading and glyph rendering
-- **FontConfig** → Native font discovery and management
-- **Pango** → Advanced text layout and shaping
+- **FreeType-style work** → font loading, glyph metrics, outlines, and rasterization
+- **FontConfig-style work** → native font discovery, fallback, and coverage matching
+- **Pango/HarfBuzz-style work** → text layout, shaping, feature application, and script-aware glyph runs
 
 ## 🛠️ Building
 
@@ -101,17 +87,16 @@ pub fn main() !void {
 
 ## 🔧 Architecture
 
-- **Font Manager**: Central font loading and caching system
-- **Glyph Renderer**: Individual character rendering with hinting
-- **Text Layout**: Complex text shaping and positioning
-- **Text Shaper**: Advanced typography and ligature support
-- **Emoji Renderer**: Dedicated emoji handling and fallbacks
-- **Subpixel Renderer**: High-quality anti-aliasing
-- **Programming Fonts**: Specialized support for developer fonts
+- **Font Manager**: font loading and caching API under active development
+- **Font Parser**: OpenType/TrueType table parsing, currently partial
+- **Glyph Renderer**: glyph rendering and hinting experiments
+- **Text Layout / Shaping**: script-aware layout work, not yet full HarfBuzz parity
+- **Emoji Renderer**: emoji detection and fallback experiments
+- **Terminal Helpers**: gcode-backed terminal text handling and cursor movement
 
 ## 🎨 Programming Font Support
 
-ZFont includes native support for popular programming fonts:
+ZFont tracks common programming fonts and Nerd Font aliases for fallback and integration experiments:
 
 - **Fira Code**: Complete ligature support
 - **JetBrains Mono**: Developer-optimized rendering
@@ -120,7 +105,7 @@ ZFont includes native support for popular programming fonts:
 
 ## 🌟 Nerd Font Integration
 
-Full compatibility with Nerd Fonts for developer icons and symbols:
+Nerd Font support is an active integration target for developer icons and terminal UI symbols:
 
 - File type icons
 - Git status indicators
@@ -133,13 +118,22 @@ Full compatibility with Nerd Fonts for developer icons and symbols:
 
 ## 📄 Development Status
 
-ZFont is in active development. Current focus areas:
+ZFont is experimental and in active development. Current focus areas:
 
 - Core font rendering engine
 - Text layout and shaping
 - Emoji fallback systems
 - Programming font optimizations
 - Performance benchmarking
+
+## 📚 Documentation
+
+- [Documentation Index](docs/README.md) - Clean docs map and stability boundaries
+- [Quickstart](docs/getting-started/quickstart.md) - Minimal current API examples
+- [API Reference](docs/reference/api.md) - Exported API grouped by maturity
+- [Support Matrix](docs/reference/support-matrix.md) - Implemented, partial, experimental, and planned areas
+- [Architecture](docs/internals/architecture.md) - Module graph and data flows
+- [Performance Evidence](docs/project/performance.md) - Current benchmark policy
 
 ---
 

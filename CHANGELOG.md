@@ -5,6 +5,38 @@ All notable changes to ZFont will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.8] - 2026-07-08
+
+### Added
+- Real TrueType/OpenType table parsing in `font_parser.zig` for `head`, `maxp`,
+  `hhea`, `hmtx`, `cmap`, `name`, `OS/2`, `loca`, and `glyf`, replacing the
+  previous placeholder stubs. Includes bounds-checked big-endian readers,
+  cmap formats 0/4/6/12 with best-subtable selection, name-table family/style
+  extraction (UTF-16BE + Latin-1), real hmtx advance widths with font-unit→pixel
+  scaling, OS/2-backed `x_height`/`cap_height` and Unicode-range script coverage,
+  and simple-glyph outline/bbox parsing
+- `shaping.zig`: an honest shaping result model (`ShapedGlyph`, `ShapingResult`)
+  carrying glyph id, codepoint, cluster, x/y advance, x/y offset, direction,
+  script, and source byte range. `shape()` resolves glyph ids from the real cmap
+  and advances from real hmtx; uncovered codepoints are emitted as `.notdef`
+- `font_set.zig`: a deterministic, non-owning `FontSet` doing real cmap coverage
+  analysis via `Font.hasGlyph`. `coveringFont`/`coveringIndex` pick the first
+  registered font that contains a glyph; `resolveRuns` splits text into
+  `FontRun`s by covering font for explicit, no-discovery fallback chains
+- `test_font.zig`: a deterministic in-memory TrueType generator (with
+  `buildLetter` for disjoint-coverage fixtures) so parser, shaping, and fallback
+  tests are fixture-backed with no binary blobs or licensing concerns
+
+### Changed
+- Test count grew to 34 (from 17); new tests are fixture-backed and cover
+  metadata, cmap hits/misses, metrics, advances, outline geometry, malformed
+  input rejection, shaping results, and coverage-based fallback
+
+### Notes
+- Still honestly deferred: composite `glyf` assembly, CFF/CFF2 outlines,
+  Arabic/Indic contextual shaping, BiDi visual reordering, system font
+  discovery, and GPU texture handles (tracked in `tasks/todo.md`)
+
 ## [0.1.7] - 2026-06-05
 
 ### Changed

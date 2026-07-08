@@ -1,200 +1,108 @@
 # ZFont Documentation
 
-## Overview
+ZFont is an experimental Zig font and terminal text-processing library. The docs
+are organized around the current implemented surface, clear experimental
+boundaries, and the path toward a more complete pure-Zig font stack.
 
-ZFont is a modern font rendering library written in pure Zig with advanced Unicode processing via gcode integration. It replaces traditional C libraries (HarfBuzz, ICU, FreeType) with a memory-safe, high-performance implementation.
+## Documentation Map
 
-## Documentation Structure
+```mermaid
+flowchart TD
+    start["Start here<br/>docs/README.md"]
 
-### Core Documentation
-- **[API Reference](API.md)** - Complete API documentation with examples
-- **[Performance Benchmarks](PERFORMANCE.md)** - Detailed performance comparisons
-- **[Migration Guide](MIGRATION.md)** - How to migrate from HarfBuzz/ICU
-- **[Terminal Integration](TERMINAL_INTEGRATION.md)** - Terminal-specific features and patterns
-- **[Font Catalog & Licensing](FONTS.md)** - Recommended families and licensing guidance
+    start --> gs["Getting Started"]
+    start --> ref["Reference"]
+    start --> guides["Guides"]
+    start --> internals["Internals"]
+    start --> project["Project"]
 
-### Examples
-- **[Arabic Text Processing](../examples/arabic_text.zig)** - Arabic contextual forms and BiDi
-- **[CJK Text Handling](../examples/cjk_text.zig)** - Chinese, Japanese, Korean width handling
-- **[Emoji Sequences](../examples/emoji_sequences.zig)** - Complex emoji processing
-- **[Terminal Integration](../examples/terminal_integration.zig)** - Complete terminal example
+    gs --> quick["quickstart.md"]
+    gs --> install["installation.md"]
 
-## Quick Start
+    ref --> api["api.md"]
+    ref --> support["support-matrix.md"]
 
-### Installation
+    guides --> terminal["terminal-integration.md"]
+    guides --> fonts["fonts.md"]
+    guides --> migration["migration.md"]
 
-Add ZFont to your `build.zig`:
+    internals --> arch["architecture.md"]
 
-```zig
-const zfont = b.dependency("zfont", .{
-    .target = target,
-    .optimize = optimize,
-});
-exe.root_module.addImport("zfont", zfont.module("zfont"));
+    project --> performance["performance.md"]
 ```
 
-### Basic Usage
+## Runtime Shape
 
-```zig
-const std = @import("std");
-const zfont = @import("zfont");
+```mermaid
+flowchart LR
+    app["Zig application"] --> zfont["zfont root module"]
+    zfont --> font["font metadata / glyph APIs"]
+    zfont --> text["text processors"]
+    zfont --> terminal["terminal helpers"]
+    zfont --> experimental["experimental shaping / GPU / emoji rendering"]
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-
-    // Process Arabic text with contextual forms
-    var arabic_processor = try zfont.ArabicContextualProcessor.init(allocator);
-    defer arabic_processor.deinit();
-
-    const result = try arabic_processor.processArabicText("مرحبا بالعالم");
-    defer result.deinit();
-
-    std.log.info("Found {} contextual forms", .{result.contextual_forms.items.len});
-}
+    text --> gcode["gcode Unicode semantics"]
+    terminal --> gcode
+    font --> parser["font_parser / font_manager"]
+    experimental --> future["implementation and fixture work required"]
 ```
 
-## Key Features
+## Stability Flow
 
-### 🌍 World-Class Unicode Support
-- **BiDi Text Processing**: Perfect Arabic/Hebrew RTL support (UAX #9)
-- **Complex Script Shaping**: Indic syllable formation (Devanagari, Bengali, Tamil)
-- **Arabic Contextual Forms**: Complete isolated/initial/medial/final processing
-- **CJK Width Handling**: Proper fullwidth/halfwidth character support
-- **Advanced Word Boundaries**: UAX #29 compliant word/sentence detection
-- **Perfect Emoji Sequences**: ZWJ, flags, skin tones, complex combinations
+```mermaid
+flowchart TD
+    surface{"Which surface?"}
+    surface --> current["Current usable APIs"]
+    surface --> partial["Partial implementation"]
+    surface --> experimental["Experimental / placeholder-heavy"]
+    surface --> planned["Planned"]
 
-### ⚡ Terminal Optimization
-- **Intelligent Cursor Positioning**: Complex text-aware cursor movement
-- **Performance-Optimized Scrolling**: Smart caching for high-speed terminals
-- **Script-Aware Rendering**: Automatic optimization based on text complexity
-- **Mixed-Script Handling**: Seamless LTR/RTL text in the same line
-
-### 🚀 Performance
-- **4-9x faster** than HarfBuzz + ICU
-- **80-90% less** memory usage
-- **Perfect 60fps** terminal performance
-- **Zero** memory leaks
-- **17x faster** compilation
-
-## API Overview
-
-### Core Processors
-
-| Processor | Purpose | Use Case |
-|-----------|---------|----------|
-| `GcodeTextProcessor` | General text processing with BiDi | Mixed LTR/RTL text |
-| `ArabicContextualProcessor` | Arabic contextual forms | Arabic text rendering |
-| `IndicSyllableProcessor` | Indic syllable formation | Hindi, Bengali, Tamil text |
-| `CJKWidthProcessor` | CJK character width handling | Chinese, Japanese, Korean text |
-| `EmojiSequenceProcessor` | Complex emoji sequences | Emoji-rich content |
-| `TerminalCursorProcessor` | Terminal cursor positioning | Terminal applications |
-| `TerminalPerformanceOptimizer` | Performance optimization | High-speed terminals |
-
-### Integration Components
-
-| Component | Purpose | Use Case |
-|-----------|---------|----------|
-| `TerminalTextHandler` | Complete terminal text processing | Terminal emulators |
-| `GcodeTextShaper` | Advanced text shaping | Complex typography |
-| `AdvancedScriptProcessor` | Multi-script analysis | International applications |
-
-## Architecture
-
-```
-Application Layer
-    ↓
-ZFont Unified API
-    ↓
-┌─────────────────┬─────────────────┬─────────────────┐
-│   Script        │   Text          │   Terminal      │
-│   Processors    │   Analysis      │   Integration   │
-├─────────────────┼─────────────────┼─────────────────┤
-│ • Arabic        │ • BiDi          │ • Cursor        │
-│ • Indic         │ • Word Bounds   │ • Performance   │
-│ • CJK           │ • Graphemes     │ • Caching       │
-│ • Emoji         │ • Scripts       │ • Optimization  │
-└─────────────────┴─────────────────┴─────────────────┘
-    ↓
-gcode Unicode Processing
-    ↓
-Pure Zig Implementation
+    current --> use["Use with local tests"]
+    partial --> verify["Validate against your fonts/text"]
+    experimental --> avoid["Do not treat as stable"]
+    planned --> roadmap["Track in tasks/todo.md"]
 ```
 
-## Performance Comparison
+## Getting Started
 
-| Metric | ZFont | HarfBuzz+ICU | Improvement |
-|--------|-------|--------------|-------------|
-| Arabic processing | 0.8ms | 3.2ms | 4x faster |
-| Memory usage | 2.1MB | 12.8MB | 83% less |
-| Binary size | 1.4MB | 25.5MB | 94% smaller |
-| Compilation time | 5.8s | 101.2s | 17.5x faster |
-| Terminal performance | 60fps | 15fps | 4x faster |
+- [Installation](getting-started/installation.md) - Add ZFont as a Zig dependency and run local verification.
+- [Quickstart](getting-started/quickstart.md) - Minimal examples for font manager and terminal text helpers.
 
-## Use Cases
+## Reference
 
-### Terminal Emulators
-- **Perfect Unicode support** for international users
-- **60fps scrolling** even with complex scripts
-- **Intelligent cursor positioning** in mixed text
-- **Memory-efficient** operation
+- [API Reference](reference/api.md) - Current exported API grouped by maturity.
+- [Support Matrix](reference/support-matrix.md) - Implemented, partial, experimental, and planned surfaces.
 
-### Code Editors
-- **Smart text selection** respecting word boundaries
-- **Multi-script support** for international developers
-- **Fast find/replace** with Unicode awareness
-- **Emoji support** for modern documentation
+## Guides
 
-### Text Processing Applications
-- **BiDi text layout** for Arabic/Hebrew content
-- **Complex script shaping** for Indic languages
-- **Emoji sequence handling** for social media
-- **Performance optimization** for large documents
+- [Terminal Integration](guides/terminal-integration.md) - Terminal text measurement, cursor movement, and gcode-backed semantics.
+- [Font Catalog and Licensing](guides/fonts.md) - Recommended fonts and redistribution notes.
+- [Migration Notes](guides/migration.md) - How to evaluate ZFont alongside HarfBuzz, ICU, FreeType, and FontConfig.
 
-## Migration Benefits
+## Internals
 
-Teams migrating from HarfBuzz + ICU typically see:
+- [Architecture](internals/architecture.md) - Module graph, data flow, and experimental boundaries.
 
-### Development
-- **50-80% reduction** in build times
-- **Simplified** dependency management
-- **Better** debugging experience
-- **Memory safety** guarantees
+## Project
 
-### Runtime
-- **4-9x faster** text processing
-- **80-90% less** memory usage
-- **Perfect 60fps** terminal performance
-- **Zero** memory leaks
+- [Performance Evidence](project/performance.md) - Current benchmark posture and how future results should be recorded.
 
-### Maintenance
-- **Single codebase** (pure Zig)
-- **Integrated** Unicode processing
-- **Better** terminal support
-- **Future-proof** architecture
+## Quick Links
 
-## Getting Help
+| Area | Path |
+|------|------|
+| Package metadata | [`../build.zig.zon`](../build.zig.zon) |
+| Build script | [`../build.zig`](../build.zig) |
+| Root module | [`../src/root.zig`](../src/root.zig) |
+| gcode dependency | [`../build.zig.zon`](../build.zig.zon) |
+| Task backlog | `../tasks/todo.md` (local ignored task notes) |
 
-- **Examples**: Start with the examples in `/examples/`
-- **API Documentation**: Detailed API reference in `API.md`
-- **Migration Guide**: Step-by-step migration in `MIGRATION.md`
-- **Performance**: Benchmarks and optimization in `PERFORMANCE.md`
-- **Terminal Integration**: Specialized patterns in `TERMINAL_INTEGRATION.md`
+## Verification
 
-## Contributing
+```bash
+zig build
+zig build test
+```
 
-ZFont is an experimental library. Contributions are welcome in the form of:
-
-- **Bug reports** with test cases
-- **Performance benchmarks** on different platforms
-- **Documentation improvements**
-- **Example applications**
-
-## License
-
-See the main repository for license information.
-
----
-
-*ZFont: Modern font rendering for the modern age* 🚀
+ZFont is experimental. Treat claims as valid only when backed by current source,
+tests, fixture fonts, and benchmark output from your target environment.

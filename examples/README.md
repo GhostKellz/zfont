@@ -226,4 +226,4 @@ When contributing new examples:
 5. **Test with various input data**
 6. **Follow existing code style**
 
-Examples should demonstrate not just how to use ZFont, but how to use it effectively in production applications.
+Examples should demonstrate not just how to use ZFont, but how to evaluate it honestly in experimental applications.

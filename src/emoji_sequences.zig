@@ -3,7 +3,7 @@ const root = @import("root.zig");
 const gcode = @import("gcode");
 const GraphemeSegmenter = @import("grapheme_segmenter.zig").GraphemeSegmenter;
 
-// Perfect emoji sequence handler using gcode analysis
+// Emoji sequence handler using gcode analysis.
 // Handles complex emoji sequences, ZWJ, flags, skin tones, etc.
 pub const EmojiSequenceProcessor = struct {
     allocator: std.mem.Allocator,

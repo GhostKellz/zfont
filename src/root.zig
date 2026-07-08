@@ -38,6 +38,12 @@ pub const EmojiSequenceProcessor = @import("emoji_sequences.zig").EmojiSequenceP
 pub const TerminalCursorProcessor = @import("terminal_cursor.zig").TerminalCursorProcessor;
 pub const TerminalPerformanceOptimizer = @import("terminal_performance.zig").TerminalPerformanceOptimizer;
 pub const GraphemeSegmenter = @import("grapheme_segmenter.zig").GraphemeSegmenter;
+pub const shaping = @import("shaping.zig");
+pub const ShapedGlyph = shaping.ShapedGlyph;
+pub const ShapingResult = shaping.ShapingResult;
+pub const shapeText = shaping.shape;
+pub const FontSet = @import("font_set.zig").FontSet;
+pub const FontRun = @import("font_set.zig").FontRun;
 
 pub const FontError = error{
     InvalidFontData,
@@ -101,4 +107,10 @@ test "zfont basic functionality" {
 
     // Basic test - will expand once we implement the core functionality
     try std.testing.expect(true);
+}
+
+// Pull the fixture-backed shaping and fallback tests into the test binary.
+test {
+    _ = @import("shaping.zig");
+    _ = @import("font_set.zig");
 }
